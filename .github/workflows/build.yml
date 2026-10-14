@@ -1,0 +1,46 @@
+name: Plugins bauen
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows
+          - os: macos-latest
+            name: Mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Konfigurieren
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Bauen
+        run: cmake --build build --config Release --parallel
+
+      - name: Prüfen mit pluginval
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            curl -sSL -o pv.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip
+            7z x pv.zip -opv > /dev/null
+            ./pv/pluginval.exe --strictness-level 7 --validate-in-process "build/OnnoVC1_artefacts/Release/VST3/Onno VC-1.vst3"
+          else
+            curl -sSL -o pv.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+            unzip -q pv.zip -d pv
+            ./pv/pluginval.app/Contents/MacOS/pluginval --strictness-level 7 --validate-in-process "build/OnnoVC1_artefacts/Release/VST3/Onno VC-1.vst3"
+          fi
+
+      - name: Paket hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: Onno-Plugins-${{ matrix.name }}
+          path: |
+            build/*_artefacts/Release/VST3/*.vst3
+            build/*_artefacts/Release/AU/*.component
