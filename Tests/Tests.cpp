@@ -4,6 +4,8 @@
 #include "VC1/VC1Editor.h"
 #include "CS1/CS1Processor.h"
 #include "CS1/CS1Editor.h"
+#include "RV1/RV1Processor.h"
+#include "RV1/RV1Editor.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <cstdio>
 #include <functional>
@@ -200,12 +202,158 @@ static void testCS1 (const juce::File& dir)
     render<CS1Processor, CS1Editor> (dir, "cs1-modern.png", 1100, 380, F ([] (CS1Processor& p) { p.applyPreset (7); setParam (p.apvts, "gateOn", 1); setParam (p.apvts, "view", 1); }), -1);
 }
 
+// Impulsantwort des Halls (nur Hallanteil), Länge in Sekunden
+static std::vector<float> impulse (RV1Processor& p, float seconds, std::vector<float>* right = nullptr)
+{
+    p.prepareToPlay (48000, 512);
+    juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m;
+    std::vector<float> out;
+    const int blocks = (int) (seconds * 48000 / 512);
+    for (int k = 0; k < blocks; ++k)
+    {
+        b.clear();
+        if (k == 0) { b.setSample (0, 0, 1.0f); b.setSample (1, 0, 1.0f); }
+        p.processBlock (b, m);
+        for (int i = 0; i < 512; ++i) { out.push_back (b.getSample (0, i)); if (right) right->push_back (b.getSample (1, i)); }
+    }
+    return out;
+}
+
+// Nachhallzeit aus der Schroeder-Rückwärtsintegration (T30: -5 bis -35 dB, auf 60 dB hochgerechnet)
+static float rt60 (const std::vector<float>& h)
+{
+    std::vector<double> e (h.size() + 1, 0.0);
+    for (int i = (int) h.size() - 1; i >= 0; --i) e[(size_t) i] = e[(size_t) i + 1] + (double) h[(size_t) i] * h[(size_t) i];
+    const double e0 = e[0];
+    int i5 = -1, i35 = -1;
+    for (size_t i = 0; i < h.size(); ++i)
+    {
+        const double db = 10 * std::log10 (e[i] / e0 + 1e-30);
+        if (i5 < 0 && db <= -5) i5 = (int) i;
+        if (i35 < 0 && db <= -35) { i35 = (int) i; break; }
+    }
+    if (i5 < 0 || i35 < 0) return -1;
+    return (float) ((i35 - i5) / 48000.0 * 2.0);
+}
+
+static void testRV1 (const juce::File& dir)
+{
+    std::puts ("--- RV-1 ---");
+    using F = std::function<void (RV1Processor&)>;
+    check ("Mix 0 %: Signal unverändert", measure<RV1Processor> (1000, 0.25f, F ([] (RV1Processor& p) { setParam (p.apvts, "mix", 0); })), 0.0f, 0.01f);
+
+    for (float dec : { 1.0f, 2.4f, 6.0f })
+    {
+        RV1Processor p;
+        setParam (p.apvts, "send", 1); setParam (p.apvts, "decay", dec); setParam (p.apvts, "character", 100);
+        setParam (p.apvts, "depth", 0); setParam (p.apvts, "lowCut", 20); setParam (p.apvts, "highCut", 20000); setParam (p.apvts, "movement", 0);
+        const float t = rt60 (impulse (p, dec * 1.6f + 0.5f));
+        check (("Nachhallzeit bei Decay " + juce::String (dec, 1) + " s (in s)").toRawUTF8(), t, dec, dec * 0.1f);
+    }
+
+    {
+        RV1Processor p; setParam (p.apvts, "send", 1);
+        std::vector<float> r;
+        auto l = impulse (p, 1.0f, &r);
+        double sl = 0, sr2 = 0, slr = 0;
+        for (size_t i = 0; i < l.size(); ++i) { sl += l[i] * l[i]; sr2 += r[i] * r[i]; slr += l[i] * r[i]; }
+        check ("Stereo: Korrelation L/R klein (x100)", (float) (100 * slr / std::sqrt (sl * sr2)), 0.0f, 35.0f);
+    }
+
+    // alle Programme: stabil, keine ungültigen Werte, sinnvoller Pegel
+    {
+        int bad = 0; float worst = 0;
+        for (int k = 0; k < (int) RV1Processor::programs().size(); ++k)
+        {
+            RV1Processor p; p.prepareToPlay (48000, 512); p.loadProgram (k); setParam (p.apvts, "send", 1);
+            juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m; juce::Random rnd (k); long t = 0;
+            for (int j = 0; j < 400; ++j)
+            {
+                fill (b, t, 220, j < 100 ? 0.3f : 0.0f, j < 100 ? 0.3f : 0.0f, rnd);
+                p.processBlock (b, m);
+                for (int i = 0; i < 512; ++i)
+                {
+                    const float v = b.getSample (0, i);
+                    if (! std::isfinite (v)) ++bad;
+                    worst = std::max (worst, std::abs (v));
+                }
+            }
+            if (worst > 4.0f) std::printf ("     instabil: Programm %d (%s)\n", k, RV1Processor::programs()[(size_t) k].name);
+        }
+        check ("32 Programme: ungültige Samples", (float) bad, 0.0f, 0.0f);
+        check ("32 Programme: höchste Spitze unter 0 dBFS (in dBFS)", 20 * std::log10 (worst), -6.0f, 6.0f);
+    }
+
+    // Ducking: Hall unter einem anhaltenden lauten Ton deutlich leiser
+    {
+        auto wet = [] (float duck) {
+            return measure<RV1Processor> (500, 0.5f, F ([duck] (RV1Processor& p) { setParam (p.apvts, "send", 1); setParam (p.apvts, "duck", duck); }), 300);
+        };
+        check ("Duck 100 % senkt den Hall unter Signal (dB)", wet (100) - wet (0), -24.0f, 1.0f);
+    }
+
+    // Gated: nach dem Signal schließt der Hall nach der Gate-Zeit
+    {
+        RV1Processor p; p.prepareToPlay (48000, 512);
+        p.loadProgram (24);  // 80s Snare Gate, Gate-Zeit 400 ms
+        setParam (p.apvts, "send", 1);
+        juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m; juce::Random rnd (5); long t = 0;
+        float early = 0, late = 0;
+        for (int j = 0; j < 120; ++j)
+        {
+            fill (b, t, 200, 0.0f, j < 4 ? 0.5f : 0.0f, rnd);
+            p.processBlock (b, m);
+            const float ms = (float) (j * 512) / 48.0f;
+            for (int i = 0; i < 512; ++i)
+            {
+                if (ms > 100 && ms < 300) early = std::max (early, std::abs (b.getSample (0, i)));
+                if (ms > 520) late = std::max (late, std::abs (b.getSample (0, i)));
+            }
+        }
+        check ("Gated: offen während der Gate-Zeit (dBFS)", 20 * std::log10 (early), -20.0f, 14.0f);
+        check ("Gated: nach der Gate-Zeit zu (unter -80 dBFS)", std::max (-120.0f, 20 * std::log10 (late + 1e-9f)), -100.0f, 20.0f);
+    }
+
+    // Freeze hält den Hall stehen, ohne aufzuschaukeln
+    {
+        RV1Processor p; p.prepareToPlay (48000, 512); setParam (p.apvts, "send", 1); setParam (p.apvts, "decay", 3);
+        juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m; juce::Random rnd (6); long t = 0;
+        double eA = 0, eB = 0;
+        for (int j = 0; j < 1000; ++j)
+        {
+            if (j == 40) setParam (p.apvts, "freeze", 1);
+            fill (b, t, 300, 0.0f, j < 30 ? 0.3f : 0.0f, rnd);
+            p.processBlock (b, m);
+            for (int i = 0; i < 512; ++i)
+            {
+                const double v = b.getSample (0, i);
+                if (j >= 100 && j < 200) eA += v * v;
+                if (j >= 900) eB += v * v;
+            }
+        }
+        check ("Freeze: Energie nach 10 s fast gleich (dB)", (float) (10 * std::log10 (eB / eA)), 0.0f, 3.0f);
+    }
+
+    {
+        RV1Processor p; setParam (p.apvts, "mix", 42);
+        p.loadProgram (5);
+        check ("Programmwechsel behält Mix", p.apvts.getRawParameterValue ("mix")->load(), 42.0f, 0.01f);
+        check ("Programm Vocal Plate: Duck 50 %", p.apvts.getRawParameterValue ("duck")->load(), 50.0f, 0.01f);
+    }
+
+    auto setup = F ([] (RV1Processor& p) { p.loadProgram (5); });
+    render<RV1Processor, RV1Editor> (dir, "rv1-konsole.png", 1000, 340, setup, -1);
+    render<RV1Processor, RV1Editor> (dir, "rv1-konsole-hover.png", 1000, 340, setup, 1);
+    render<RV1Processor, RV1Editor> (dir, "rv1-modern.png", 1000, 340, F ([] (RV1Processor& p) { p.loadProgram (28); setParam (p.apvts, "view", 1); }), -1);
+}
+
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui;
     juce::File dir (argc > 1 ? juce::String (argv[1]) : juce::File::getCurrentWorkingDirectory().getFullPathName());
     testVC1 (dir);
     testCS1 (dir);
+    testRV1 (dir);
     std::printf ("\n%s (%d Fehler)\n", failures == 0 ? "ALLE TESTS OK" : "TESTS FEHLGESCHLAGEN", failures);
     return failures == 0 ? 0 : 1;
 }
