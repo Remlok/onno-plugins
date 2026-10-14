@@ -1,7 +1,7 @@
 #pragma once
 // Gemeinsamer Look aller Onno-Plugins: Konsolen-Frontplatte mit pro Pixel beleuchteten
 // 3D-Reglern und Chrom-Kippschalter, dazu der moderne Studio-Look.
-// Alles wird in einem 800x300-Raster gezeichnet und mit dem Fenster skaliert.
+// Alles wird in einem festen Raster (z. B. 800x300) gezeichnet und mit dem Fenster skaliert.
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <cmath>
@@ -29,7 +29,7 @@ inline juce::Font font (float h, bool bold = true, bool italic = false)
 }
 
 // Plattenfarbe in Höhe y (Raster-Koordinaten), gleicher Verlauf wie die Frontplatte
-inline float plateAt (float y) { return 0.105f - 0.03f * (y - 14.0f) / 272.0f; }
+inline float plateAt (float y, float H = 300.0f) { return 0.105f - 0.03f * (y - 14.0f) / (H - 28.0f); }
 
 inline void ctext (Graphics& g, const String& s, float cx, float y, float h)
 {
@@ -118,7 +118,7 @@ inline juce::PixelARGB px (float r, float g, float b)
     return juce::PixelARGB (255, u8 (r), u8 (g), u8 (b));
 }
 
-// Ein vorberechneter Bildpuffer mit seiner Lage im 800x300-Raster
+// Ein vorberechneter Bildpuffer mit seiner Lage im Raster
 struct Sprite
 {
     Image img;
@@ -128,7 +128,7 @@ struct Sprite
 
 // Reglerkörper inklusive Schlagschatten und Plattenhintergrund (deckend).
 // ps = Bildpunkte pro Rastereinheit
-inline Sprite buildKnob (float cx, float cy, float rBase, int ring, float ps)
+inline Sprite buildKnob (float cx, float cy, float rBase, int ring, float ps, float H = 300.0f)
 {
     const float m = std::ceil (rBase * 0.4f) + 2.0f;
     const float half = rBase + m;
@@ -140,7 +140,7 @@ inline Sprite buildKnob (float cx, float cy, float rBase, int ring, float ps)
     const float r = rBase * ps;
     for (int y = 0; y < sz; ++y)
     {
-        const float pl = plateAt (sp.area.getY() + (y + 0.5f) / ps);
+        const float pl = plateAt (sp.area.getY() + (y + 0.5f) / ps, H);
         for (int x = 0; x < sz; ++x)
         {
             const float dx = x + 0.5f - half * ps, dy = y + 0.5f - half * ps;
@@ -191,7 +191,7 @@ inline bool onLever (float dx, float dy, float dir, float ps, float& nx, float& 
     return false;
 }
 
-inline Sprite buildToggle (float cx, float cy, bool down, float ps)
+inline Sprite buildToggle (float cx, float cy, bool down, float ps, float H = 300.0f)
 {
     const float half = 24.0f;
     const int sz = (int) std::ceil (2 * half * ps);
@@ -204,7 +204,7 @@ inline Sprite buildToggle (float cx, float cy, bool down, float ps)
     float nx, ny, nz;
     for (int y = 0; y < sz; ++y)
     {
-        const float pl = plateAt (sp.area.getY() + (y + 0.5f) / ps);
+        const float pl = plateAt (sp.area.getY() + (y + 0.5f) / ps, H);
         for (int x = 0; x < sz; ++x)
         {
             const float dx = x + 0.5f - half * ps, dy = y + 0.5f - half * ps;
@@ -272,32 +272,32 @@ inline Sprite buildToggle (float cx, float cy, bool down, float ps)
 }
 
 // ----------------------------------------------------------- Konsolen-Teile
-inline void drawFaceplate (Graphics& g)
+inline void drawFaceplate (Graphics& g, float W = 800.0f, float H = 300.0f)
 {
     g.fillAll (rgb (12, 12, 13));
     g.setGradientFill (juce::ColourGradient (Colour::fromFloatRGBA (0.105f, 0.105f, 0.112f, 1), 0, 14,
-                                             Colour::fromFloatRGBA (0.075f, 0.075f, 0.082f, 1), 0, 286, false));
-    g.fillRect (0.0f, 14.0f, 800.0f, 272.0f);
+                                             Colour::fromFloatRGBA (0.075f, 0.075f, 0.082f, 1), 0, H - 14, false));
+    g.fillRect (0.0f, 14.0f, W, H - 28);
     g.setGradientFill (juce::ColourGradient (Colour::fromFloatRGBA (0.86f, 0.87f, 0.88f, 1), 0, 0,
                                              Colour::fromFloatRGBA (0.56f, 0.57f, 0.58f, 1), 0, 14, false));
-    g.fillRect (0.0f, 0.0f, 800.0f, 14.0f);
-    g.setGradientFill (juce::ColourGradient (Colour::fromFloatRGBA (0.80f, 0.81f, 0.82f, 1), 0, 286,
-                                             Colour::fromFloatRGBA (0.50f, 0.51f, 0.52f, 1), 0, 300, false));
-    g.fillRect (0.0f, 286.0f, 800.0f, 14.0f);
+    g.fillRect (0.0f, 0.0f, W, 14.0f);
+    g.setGradientFill (juce::ColourGradient (Colour::fromFloatRGBA (0.80f, 0.81f, 0.82f, 1), 0, H - 14,
+                                             Colour::fromFloatRGBA (0.50f, 0.51f, 0.52f, 1), 0, H, false));
+    g.fillRect (0.0f, H - 14, W, 14.0f);
     g.setColour (juce::Colours::black.withAlpha (0.6f));
-    g.fillRect (0.0f, 14.0f, 800.0f, 1.0f);
-    g.fillRect (0.0f, 285.0f, 800.0f, 1.0f);
+    g.fillRect (0.0f, 14.0f, W, 1.0f);
+    g.fillRect (0.0f, H - 15, W, 1.0f);
     g.setColour (rgb (30, 30, 32));
-    for (auto [x, y] : { std::pair (24.0f, 7.0f), std::pair (776.0f, 7.0f), std::pair (24.0f, 293.0f), std::pair (776.0f, 293.0f) })
+    for (auto [x, y] : { std::pair (24.0f, 7.0f), std::pair (W - 24, 7.0f), std::pair (24.0f, H - 7), std::pair (W - 24, H - 7) })
         g.fillRoundedRectangle (x - 7, y - 3, 14, 6, 3);
 }
 
-inline void drawSeam (Graphics& g, float x)
+inline void drawSeam (Graphics& g, float x, float y0 = 26.0f, float h = 248.0f)
 {
     g.setColour (juce::Colours::black.withAlpha (0.7f));
-    g.fillRect (x, 26.0f, 1.0f, 248.0f);
+    g.fillRect (x, y0, 1.0f, h);
     g.setColour (juce::Colours::white.withAlpha (0.06f));
-    g.fillRect (x + 1, 26.0f, 1.0f, 248.0f);
+    g.fillRect (x + 1, y0, 1.0f, h);
 }
 
 // Rechteckige Rack-Taste mit Beschriftung darüber

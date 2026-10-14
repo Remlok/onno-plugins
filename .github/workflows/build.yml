@@ -30,11 +30,11 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             curl -sSL -o pv.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip
             7z x pv.zip -opv > /dev/null
-            ./pv/pluginval.exe --strictness-level 7 --validate-in-process "build/OnnoVC1_artefacts/Release/VST3/Onno VC-1.vst3"
+            for f in build/*_artefacts/Release/VST3/*.vst3; do ./pv/pluginval.exe --strictness-level 7 --validate-in-process "$f"; done
           else
             curl -sSL -o pv.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
             unzip -q pv.zip -d pv
-            ./pv/pluginval.app/Contents/MacOS/pluginval --strictness-level 7 --validate-in-process "build/OnnoVC1_artefacts/Release/VST3/Onno VC-1.vst3"
+            for f in build/*_artefacts/Release/VST3/*.vst3; do ./pv/pluginval.app/Contents/MacOS/pluginval --strictness-level 7 --validate-in-process "$f"; done
           fi
 
       - name: Paket hochladen
