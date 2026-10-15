@@ -32,7 +32,7 @@ CompProcessor::CompProcessor() : ModernProcessor ("Onno Comp", "OnnoComp", stere
     analog.attach (*this);
 }
 
-void CompProcessor::prepareToPlay (double sampleRate, int)
+void CompProcessor::prepare (double sampleRate, int)
 {
     sr = sampleRate;
     for (auto& d : dl) d.assign ((size_t) (0.021 * sr) + 2, 0.0f);
@@ -51,7 +51,7 @@ float CompProcessor::autoMakeup() const
     return -0.5f * gainComputer (0.0f, pThr->load(), std::max (1.0f, pRatio->load()), pKnee->load());
 }
 
-void CompProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
+void CompProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
     const int n = buf.getNumSamples();
@@ -143,7 +143,9 @@ float histY (float db) { return rHist.getY() + rHist.getHeight() * juce::jlimit 
 CompEditor::CompEditor (CompProcessor& p) : ModernEditor (p, p.apvts, "COMP", 900, 470), proc (p)
 {
     display = rDisplay;
-    addBypass();
+    addHelp ({ { "OUTPUT", "Pegel nach der Kompression (Make-up). Mit AUTO GAIN oder MATCH automatisch." },
+               { "AUTO GAIN", "Gleicht die Pegelreduktion automatisch wieder aus." },
+               { "LIMIT 0 dB", "Harte Grenze bei 0 dBFS am Ausgang, damit nichts übersteuert." } });
     const float y = 368, dx = 74;
     float x = 62;
     auto add = [&] (const char* id, const char* label, Colour c, std::function<String (float)> f, bool bip = false)

@@ -46,7 +46,7 @@ EQProcessor::EQProcessor() : ModernProcessor ("Onno EQ", "OnnoEQ", stereoBuses()
     analog.attach (*this);
 }
 
-void EQProcessor::prepareToPlay (double sampleRate, int)
+void EQProcessor::prepare (double sampleRate, int)
 {
     sr = sampleRate;
     analyzer.prepare (sr);
@@ -101,7 +101,7 @@ int EQProcessor::design (const Band& bd, double sr, dsp::Biquad* st)
     }
 }
 
-void EQProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
+void EQProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
     const int nch = std::min (2, buf.getNumChannels()), n = buf.getNumSamples();
@@ -159,7 +159,21 @@ const juce::Rectangle<float> rDisplay { 16, 50, 868, 236 };
 EQEditor::EQEditor (EQProcessor& p) : ModernEditor (p, p.apvts, "EQ", 900, 470), proc (p)
 {
     display = rDisplay;
-    addBypass();
+    addHelp ({ { "FREQ", "Frequenz des gewählten Bandes. Auch im Display am Knoten ziehbar." },
+               { "GAIN", "Anhebung oder Absenkung des gewählten Bandes." },
+               { "Q", "Breite des Bandes. Klein = breit und musikalisch, groß = schmal, für Resonanzen. Im Display: Mausrad am Knoten." },
+               { "OUTPUT", "Gesamtpegel nach dem EQ. Nach Anhebungen hier zurücknehmen oder MATCH nutzen." },
+               { "LOW CUT", "Schneidet alles unterhalb der Frequenz weg, z. B. Rumpeln unter Gitarren." },
+               { "HIGH CUT", "Schneidet alles oberhalb der Frequenz weg, z. B. Fizz bei High-Gain-Gitarren." },
+               { "LOW SHELF", "Hebt oder senkt alles unterhalb der Frequenz gleichmäßig." },
+               { "HIGH SHELF", "Hebt oder senkt alles oberhalb der Frequenz gleichmäßig, z. B. für Luft." },
+               { "BELL", "Glocke um die Frequenz: der Allrounder zum Anheben oder Absenken." },
+               { "NOTCH", "Sehr schmaler, tiefer Schnitt, um einzelne Pfeiftöne oder Resonanzen zu entfernen." },
+               { "BAND PASS", "Lässt nur den Bereich um die Frequenz durch, gut zum Suchen von Problemstellen." },
+               { "BAND ON", "Band ist aktiv. Klicken = Band ausschalten." },
+               { "BAND OFF", "Band ist aus. Klicken = Band einschalten." },
+               { "RESET BAND", "Setzt das gewählte Band auf seine Grundeinstellung zurück." },
+               { "ALLE FLACH", "Setzt alle Bänder auf 0 dB." } });
     // Band-Reiter
     for (int b = 0; b < EQProcessor::numBands; ++b)
         buttons.push_back ({ { 28.0f + b * 62.0f, 306, 56, 20 },

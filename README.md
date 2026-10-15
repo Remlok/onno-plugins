@@ -27,7 +27,14 @@ Eigene Audio-Plugins (VST3, auf dem Mac auch AU) mit C++ und JUCE 8. Sie laufen 
 
 **Analoge Klangfarbe** (Leiste ANALOG unten in allen sechs): CLEAN (aus), BRIT (Übertrager, dichte Bässe, weiche Höhen), CONSOLE (sauber, ungerade Obertöne, etwas Glanz), TUBE (Röhre, warme geradzahlige Obertöne), FET (1176-artig, bissig, Präsenz). DRIVE bestimmt, wie stark gesättigt wird; bei 35 % liegt der Klirr bei -12 dBFS um 2-4 %, leise Signale bleiben im Pegel gleich. Im Delay läuft jede Wiederholung erneut durch die Sättigung wie bei einem Bandecho, im Limit sitzt sie vor dem Limiter.
 
-Alle sechs teilen sich eine Oberfläche: oben die große Anzeige zum Anfassen, unten die Regler. Ziehen (Shift = fein), Mausrad und Doppelklick (Standardwert) funktionieren überall gleich. Das Fenster lässt sich frei skalieren.
+Alle sieben (EQ, Comp, Gate, Delay, MultiComp, Limit, Tame) teilen sich eine Oberfläche: oben die große Anzeige zum Anfassen, unten die Regler. Das Fenster lässt sich frei skalieren.
+
+**Kopfzeile, überall gleich:** Preset-Name mit Pfeilen (Klick auf den Namen: Init, Werks- und eigene Presets, „Speichern unter …“, Preset-Ordner öffnen) · A / B mit Kopieren (A>B) · Rückgängig / Wiederholen · MATCH · BYPASS.
+
+- **MATCH** gleicht die Lautheit des Ausgangs an den Eingang an (K-gewichtet, ca. 1 s). So klingen A, B und Bypass gleich laut und man vergleicht nur den Klang. Jeder A/B-Platz merkt sich seinen Ausgleich, Umschalten sitzt sofort.
+- **Bedienung:** Ziehen (Shift = fein), Mausrad, Doppelklick = Standardwert, Klick auf den Zahlenwert = eintippen („2k“, „-3“, „1,5 s“, „L30“, „inf“), Strg+Z / Strg+Y.
+- **Hilfe:** Maus kurz über einen Regler oder Button halten, dann erklärt eine Blase, was er tut.
+- Eigene Presets liegen als `.onnopreset` (XML) unter `%APPDATA%\Onno\Presets\<Plugin>` bzw. `~/Library/Onno/Presets/<Plugin>`.
 
 ## CS-1: schneller Workflow
 

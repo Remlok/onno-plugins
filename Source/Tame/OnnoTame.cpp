@@ -83,7 +83,7 @@ float TameProcessor::sensitivityAt (float f) const
     return s;
 }
 
-void TameProcessor::prepareToPlay (double sampleRate, int)
+void TameProcessor::prepare (double sampleRate, int)
 {
     sr = sampleRate;
     order = sr <= 50000 ? 10 : (sr <= 100000 ? 11 : 12);
@@ -246,7 +246,7 @@ void TameProcessor::processFrame()
     }
 }
 
-void TameProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
+void TameProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
     const int n = buf.getNumSamples();
@@ -297,7 +297,15 @@ const juce::Rectangle<float> rDisplay { 16, 50, 868, 236 };
 TameEditor::TameEditor (TameProcessor& p) : ModernEditor (p, p.apvts, "TAME", 900, 430), proc (p)
 {
     display = rDisplay;
-    addBypass();
+    addHelp ({ { "DEPTH", "Wie stark Resonanzen gedrückt werden. Mit DELTA abhören, was weggeht." },
+               { "SHARPNESS", "Hoch = nur schmale Spitzen, niedrig = auch breitere Buckel." },
+               { "SELECTIVITY", "Ab wie viel dB Überstand das Plugin eingreift. Höher = nur deutliche Resonanzen." },
+               { "ATTACK", "Wie schnell auf eine Resonanz reagiert wird." },
+               { "RELEASE", "Wie schnell die Absenkung wieder losgelassen wird." },
+               { "DELTA", "Nur das hören, was entfernt wird. Klingt es nach Musik statt nach Härte, ist es zu viel." },
+               { "STEREO LINK", "Beide Seiten gleich bearbeiten, damit das Stereobild stabil bleibt." } });
+    for (int i = 1; i < TameProcessor::profileNames.size(); ++i)
+        help[TameProcessor::profileNames[i].toUpperCase()] = String::fromUTF8 ("Profil laden: setzt Bereich, Schärfe und Empfindlichkeitskurve passend zur Quelle.");
     for (int i = 1; i < TameProcessor::profileNames.size(); ++i)
         buttons.push_back ({ { 28.0f + (i - 1) * 105.0f, 306, 99, 20 }, [i] { return TameProcessor::profileNames[i].toUpperCase(); },
                              [this, i] { return (int) value ("profile") == i; }, [this, i] { proc.applyProfile (i); }, mc::amber() });

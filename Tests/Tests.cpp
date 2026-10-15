@@ -667,6 +667,109 @@ static void testTame (const juce::File& dir)
     render<TameProcessor, TameEditor> (dir, "onno-tame.png", 900, 430, [] (TameProcessor& p) { p.applyProfile (1); }, -1, 120, true);
 }
 
+// Gemeinsames Bedien-Gerüst: Rückgängig, A/B, Presets, Lautheitsausgleich, Werte eintippen
+static void testFramework (const juce::File& dir)
+{
+    std::puts ("--- Bedien-Geruest ---");
+    auto thr = [] (CompProcessor& p) { return p.apvts.getParameter ("thr")->convertFrom0to1 (p.apvts.getParameter ("thr")->getValue()); };
+    {
+        CompProcessor p; p.prepareToPlay (48000, 512);
+        p.pushUndo(); setParam (p.apvts, "thr", -30);
+        p.pushUndo(); setParam (p.apvts, "thr", -40);
+        p.undo();
+        check ("Rueckgaengig: Threshold zurueck auf -30", thr (p), -30, 0.01f);
+        p.undo();
+        check ("Rueckgaengig: Threshold zurueck auf Standard -18", thr (p), -18, 0.01f);
+        p.redo();
+        check ("Wiederholen: Threshold wieder -30", thr (p), -30, 0.01f);
+        checkBool ("Bypass bleibt beim Rueckgaengig unberuehrt", ! p.on ("bypass"));
+    }
+    {
+        CompProcessor p; p.prepareToPlay (48000, 512);
+        setParam (p.apvts, "thr", -30);
+        p.selectSlot (1);
+        check ("B startet als Kopie von A", thr (p), -30, 0.01f);
+        setParam (p.apvts, "thr", -10);
+        p.selectSlot (0);
+        check ("Zurueck auf A", thr (p), -30, 0.01f);
+        p.selectSlot (1);
+        check ("Wieder B", thr (p), -10, 0.01f);
+        p.matchOn = true;
+        juce::MemoryBlock mb; p.getStateInformation (mb);
+        CompProcessor q; q.setStateInformation (mb.getData(), (int) mb.getSize());
+        checkBool ("Zustand speichert A/B-Platz und MATCH", q.slot() == 1 && q.matchOn.load());
+        q.selectSlot (0);
+        check ("Gespeicherter Platz A kommt zurueck", thr (q), -30, 0.01f);
+    }
+    {
+        CompProcessor p; p.prepareToPlay (48000, 512);
+        setParam (p.apvts, "thr", -33); setParam (p.apvts, "ratio", 8);
+        checkBool ("Eigenes Preset speichern", p.saveUserPreset ("Onno Test Preset"));
+        const int idx = p.presetNames().indexOf ("Onno Test Preset");
+        p.loadPreset (0);
+        check ("Init setzt Standard zurueck", thr (p), -18, 0.01f);
+        p.loadPreset (idx);
+        check ("Eigenes Preset laden", thr (p), -33, 0.01f);
+        checkBool ("Preset-Name wird angezeigt", p.presetName == "Onno Test Preset");
+        p.userPresetDir().getChildFile ("Onno Test Preset.onnopreset").deleteFile();
+    }
+    using FE = std::function<void (EQProcessor&)>;
+    check ("MATCH: EQ Output +6 dB wird auf 0 dB ausgeglichen",
+           measure<EQProcessor> (1000, 0.1f, FE ([] (EQProcessor& p) { setParam (p.apvts, "output", 6); p.matchOn = true; }), 400), 0.0f, 0.2f);
+    using FC = std::function<void (CompProcessor&)>;
+    const float squashed = measure<CompProcessor> (1000, 0.25f, FC ([] (CompProcessor& p) { setParam (p.apvts, "thr", -40); setParam (p.apvts, "ratio", 10); }), 400);
+    const float matched = measure<CompProcessor> (1000, 0.25f, FC ([] (CompProcessor& p) { setParam (p.apvts, "thr", -40); setParam (p.apvts, "ratio", 10); p.matchOn = true; }), 400);
+    std::printf ("     Comp -40 dB 10:1: ohne MATCH %+.1f dB, mit MATCH %+.2f dB\n", squashed, matched);
+    check ("MATCH: stark komprimiert gleich laut wie Eingang", matched, 0.0f, 0.3f);
+    {   // Bypass mit MATCH: sofort Eingangspegel, zurück sofort wieder ausgeglichen
+        EQProcessor p; p.prepareToPlay (48000, 512);
+        setParam (p.apvts, "output", 6); p.matchOn = true;
+        juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m; juce::Random rnd (9); long t = 0;
+        auto run = [&] (int blocks) {
+            double si = 0, so = 0;
+            for (int k = 0; k < blocks; ++k)
+            {
+                fill (b, t, 1000, 0.1f, 0, rnd);
+                for (int i = 0; i < 512; ++i) si += b.getSample (0, i) * b.getSample (0, i);
+                p.processBlock (b, m);
+                for (int i = 0; i < 512; ++i) so += b.getSample (0, i) * b.getSample (0, i);
+            }
+            return (float) (10 * std::log10 (so / si));
+        };
+        run (300);
+        setParam (p.apvts, "bypass", 1); run (10);
+        check ("MATCH + Bypass: gleich laut (nach 0,1 s)", run (20), 0.0f, 0.1f);
+        setParam (p.apvts, "bypass", 0); run (10);
+        check ("MATCH nach Bypass sofort wieder ausgeglichen", run (20), 0.0f, 0.2f);
+    }
+    {
+        CompProcessor c;
+        auto pv = [&c] (const char* id, const char* txt) { auto* p = c.apvts.getParameter (id); return p->convertFrom0to1 (onno::ModernEditor::parseValue (*p, txt)); };
+        check ("Eintippen \"-30\" bei Threshold", pv ("thr", "-30"), -30, 0.01f);
+        check ("Eintippen \"1,5 s\" bei Release (ms)", pv ("release", "1,5 s"), 1500, 0.5f);
+        check ("Eintippen \"inf\" bei Ratio", pv ("ratio", "inf"), 100, 0.01f);
+        EQProcessor e;
+        auto* f = e.apvts.getParameter ("b4freq");
+        check ("Eintippen \"2k\" bei Frequenz", f->convertFrom0to1 (onno::ModernEditor::parseValue (*f, "2k")), 2000, 0.5f);
+        DelayProcessor d;
+        auto* pan = d.apvts.getParameter ("t1pan");
+        check ("Eintippen \"L30\" bei Pan", pan->convertFrom0to1 (onno::ModernEditor::parseValue (*pan, "L30")), -30, 0.01f);
+    }
+    {   // Bild mit Hilfe-Blase über dem Q-Regler des EQ
+        EQProcessor p; p.prepareToPlay (48000, 512);
+        setParam (p.apvts, "b4gain", 4); setParam (p.apvts, "b4freq", 2800);
+        std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
+        auto* e = dynamic_cast<EQEditor*> (ed.get());
+        juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m; juce::Random rnd (2); long t = 0;
+        for (int k = 0; k < 160; ++k) { fill (b, t, 220, 0.35f, 0.05f, rnd); p.processBlock (b, m); if (k % 4 == 0) e->tickMeters(); }
+        e->showTipFor ({ 230, 376 });
+        auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 2.0f);
+        juce::File out = dir.getChildFile ("onno-eq-hilfe.png"); out.deleteFile();
+        juce::FileOutputStream os (out); juce::PNGImageFormat().writeImageToStream (img, os);
+        std::printf ("%s geschrieben\n", out.getFullPathName().toRawUTF8());
+    }
+}
+
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -688,6 +791,7 @@ int main (int argc, char** argv)
     if (want ("Limit")) testLimit (dir);
     if (want ("Analog")) testAnalog();
     if (want ("Tame")) testTame (dir);
+    if (want ("Framework")) testFramework (dir);
     std::printf ("\n%s (%d Fehler)\n", failures == 0 ? "ALLE TESTS OK" : "TESTS FEHLGESCHLAGEN", failures);
     return failures == 0 ? 0 : 1;
 }

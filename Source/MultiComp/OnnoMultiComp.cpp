@@ -50,7 +50,7 @@ void MultiCompProcessor::crossovers (float& x1, float& x2, float& x3) const
     x3 = juce::jlimit (x2 * 1.25f, ny, pX3->load());
 }
 
-void MultiCompProcessor::prepareToPlay (double sampleRate, int)
+void MultiCompProcessor::prepare (double sampleRate, int)
 {
     sr = sampleRate;
     analyzer.prepare (sr);
@@ -68,7 +68,7 @@ void MultiCompProcessor::prepareToPlay (double sampleRate, int)
     mixS.reset (sr, 0.03); mixS.setCurrentAndTargetValue (pMix->load() * 0.01f);
 }
 
-void MultiCompProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
+void MultiCompProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
     const int n = buf.getNumSamples();
@@ -168,7 +168,14 @@ Colour bandColour (int b) { static const int idx[] = { 0, 2, 4, 6 }; return mc::
 MultiCompEditor::MultiCompEditor (MultiCompProcessor& p) : ModernEditor (p, p.apvts, "MULTICOMP", 900, 470), proc (p)
 {
     display = rDisplay;
-    addBypass();
+    addHelp ({ { "GAIN", "Pegel des gewählten Bandes nach der Kompression." },
+               { "X-OVER 1", "Grenze zwischen LOW und LOW-MID. Auch im Display ziehbar." },
+               { "X-OVER 2", "Grenze zwischen LOW-MID und HIGH-MID. Auch im Display ziehbar." },
+               { "X-OVER 3", "Grenze zwischen HIGH-MID und HIGH. Auch im Display ziehbar." },
+               { "SOLO", "Nur dieses Band hören." },
+               { "BAND AUS", "Dieses Band nicht komprimieren (läuft unbearbeitet durch)." },
+               { "LOW", "Bassband auswählen." }, { "LOW-MID", "Unteres Mittenband auswählen (Mulm, Körper)." },
+               { "HIGH-MID", "Oberes Mittenband auswählen (Präsenz, Härte)." }, { "HIGH", "Höhenband auswählen (Luft, Zischen)." } });
     for (int b = 0; b < MultiCompProcessor::numBands; ++b)
         buttons.push_back ({ { 28.0f + b * 78.0f, 306, 72, 20 }, [b] { return String (MultiCompProcessor::bandNames[b]); },
                              [this, b] { return sel == b; }, [this, b] { selectBand (b); }, bandColour (b) });

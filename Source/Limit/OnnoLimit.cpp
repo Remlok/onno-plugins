@@ -20,7 +20,7 @@ LimitProcessor::LimitProcessor() : ModernProcessor ("Onno Limit", "OnnoLimit", s
     analog.attach (*this);
 }
 
-void LimitProcessor::prepareToPlay (double sampleRate, int)
+void LimitProcessor::prepare (double sampleRate, int)
 {
     sr = sampleRate;
     L = std::max (2, (int) std::round (0.0015 * sr));
@@ -37,7 +37,7 @@ void LimitProcessor::prepareToPlay (double sampleRate, int)
     ceilS.reset (sr, 0.02); ceilS.setCurrentAndTargetValue (dsp::db2a (pCeil->load()));
 }
 
-void LimitProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
+void LimitProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
     const int n = buf.getNumSamples();
@@ -121,7 +121,9 @@ float histY (float db) { return rHist.getY() + rHist.getHeight() * juce::jlimit 
 LimitEditor::LimitEditor (LimitProcessor& p) : ModernEditor (p, p.apvts, "LIMIT", 760, 440), proc (p)
 {
     display = rDisplay;
-    addBypass();
+    addHelp ({ { "THRESHOLD", "Zieht den Pegel gegen die Decke. Tiefer = lauter und dichter." },
+               { "CEILING", "Höchster Ausgangspegel. Für Streaming etwa -1 dB." },
+               { "RELEASE", "Wie schnell der Limiter loslässt. Kurz = laut, kann verzerren; lang = sauberer." } });
     knobs.push_back ({ "thr", "THRESHOLD", 80, 336, 26, mc::red(), [] (float v) { return fmt::db (v); } });
     knobs.push_back ({ "ceiling", "CEILING", 176, 336, 26, modern::warm(), [] (float v) { return fmt::db (v); } });
     knobs.push_back ({ "release", "RELEASE", 272, 336, 26, mc::amber(), [] (float v) { return fmt::ms (v); } });

@@ -54,7 +54,7 @@ float DelayProcessor::tapMs (int t, double tempo) const
     return p[pTime]->load();
 }
 
-void DelayProcessor::prepareToPlay (double sampleRate, int)
+void DelayProcessor::prepare (double sampleRate, int)
 {
     sr = sampleRate;
     for (auto& t : taps)
@@ -69,7 +69,7 @@ void DelayProcessor::prepareToPlay (double sampleRate, int)
     wetS.reset (sr, 0.03); wetS.setCurrentAndTargetValue (pWet->load() <= -59.9f ? 0.0f : dsp::db2a (pWet->load()));
 }
 
-void DelayProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
+void DelayProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
     const int n = buf.getNumSamples();
@@ -184,7 +184,19 @@ const juce::Rectangle<float> rDisplay { 16, 50, 868, 236 }, rTime { 36, 70, 828,
 DelayEditor::DelayEditor (DelayProcessor& p) : ModernEditor (p, p.apvts, "DELAY", 900, 470), proc (p)
 {
     display = rDisplay;
-    addBypass();
+    addHelp ({ { "TIME", "Verzögerungszeit. Mit SYNC als Notenwert zum Songtempo, sonst in ms." },
+               { "FEEDBACK", "Wie viele Wiederholungen. Hoch = lange Echofahne." },
+               { "LEVEL", "Lautstärke dieses Taps." },
+               { "PAN", "Position des Taps im Stereobild." },
+               { "LOW CUT", "Nimmt Bässe aus den Echos, damit es unten nicht matscht." },
+               { "HIGH CUT", "Nimmt Höhen aus den Echos: dunkler, klingt wie analoges Band." },
+               { "DRY", "Pegel des Originalsignals. Auf einem Send-Bus ganz runter (AUS)." },
+               { "WET", "Pegel der Echos." },
+               { "DUCKING", "Echos werden leiser, solange gespielt oder gesungen wird, und kommen in den Pausen." },
+               { "TAP AN", "Tap ist aktiv. Klicken = Tap aus." },
+               { "TAP AUS", "Tap ist aus. Klicken = Tap an." },
+               { "SYNC", "Zeit als Notenwert zum Songtempo statt in ms." },
+               { "PING-PONG", "Echos springen abwechselnd links und rechts." } });
     for (int t = 0; t < DelayProcessor::numTaps; ++t)
         buttons.push_back ({ { 28.0f + t * 84.0f, 306, 78, 20 },
                              [this, t] {

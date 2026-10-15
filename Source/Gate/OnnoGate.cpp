@@ -30,7 +30,7 @@ GateProcessor::GateProcessor() : ModernProcessor ("Onno Gate", "OnnoGate", stere
     analog.attach (*this);
 }
 
-void GateProcessor::prepareToPlay (double sampleRate, int)
+void GateProcessor::prepare (double sampleRate, int)
 {
     sr = sampleRate;
     for (auto& d : dl) d.assign ((size_t) (0.011 * sr) + 2, 0.0f);
@@ -41,7 +41,7 @@ void GateProcessor::prepareToPlay (double sampleRate, int)
     setLatencySamples (la);
 }
 
-void GateProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
+void GateProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
     const int n = buf.getNumSamples();
@@ -129,7 +129,13 @@ float histY (float db) { return rHist.getY() + rHist.getHeight() * juce::jlimit 
 GateEditor::GateEditor (GateProcessor& p) : ModernEditor (p, p.apvts, "GATE", 900, 470), proc (p)
 {
     display = rDisplay;
-    addBypass();
+    addHelp ({ { "THRESHOLD", "Unter diesem Pegel schließt das Gate. Knapp über Rauschen und Übersprechen setzen." },
+               { "HYSTERESE", "Abstand zwischen Öffnen und Schließen. Verhindert Flattern nahe am Threshold." },
+               { "ATTACK", "Wie schnell das Gate öffnet. Sehr kurz für Kick und Snare, sonst klickt es eventuell." },
+               { "HOLD", "So lange bleibt das Gate nach dem Unterschreiten noch offen." },
+               { "RELEASE", "Wie schnell das Gate danach schließt. Länger = natürliches Ausklingen." },
+               { "RANGE", "Wie weit das Gate schließt. -inf = ganz zu, -10 dB = nur leiser, klingt natürlicher." },
+               { "LISTEN", "Hört das gefilterte Steuersignal ab, um die Detektor-Filter einzustellen." } });
     const float y = 368, dx = 76;
     float x = 62;
     auto add = [&] (const char* id, const char* label, Colour c, std::function<String (float)> f)

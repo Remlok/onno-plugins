@@ -1,7 +1,10 @@
 #pragma once
 // Gemeinsame Basis der modernen Onno-Suite: Parameterbaum, Zustand speichern/laden,
 // Bus-Layouts (Stereo/Mono, optionaler Sidechain) und kleine Helfer für den Audio-Thread.
+// Dazu das Bedien-Gerüst, das alle Plugins teilen: Rückgängig/Wiederholen, A/B-Vergleich,
+// Presets (Werk + eigene Dateien) und Lautheitsausgleich (MATCH).
 #include <juce_audio_processors/juce_audio_processors.h>
+#include "Common/OnnoDSP.h"
 #include <atomic>
 
 namespace onno
@@ -85,13 +88,106 @@ namespace prm
     inline juce::AudioProcessorValueTreeState::ParameterLayout done (Layout& p) { return { p.begin(), p.end() }; }
 }
 
+// Lautheitsausgleich: misst Ein- und Ausgang K-gewichtet (wie LUFS, ~1 s Fenster) und gleicht den
+// Ausgang auf die Eingangslautheit an. Damit klingt keine Einstellung nur deshalb besser, weil sie lauter ist.
+// Pro A/B-Platz wird das gemessene Verhältnis gemerkt, damit ein Umschalten sofort richtig sitzt.
+class LoudnessMatch
+{
+public:
+    void prepare (double sampleRate)
+    {
+        sr = sampleRate;
+        for (auto* f : { &inShelf, &outShelf }) f->highShelf (sr, std::min (1500.0, sr * 0.4), 0.7, 4.0);
+        for (auto* f : { &inHp, &outHp }) f->highPass (sr, 60.0, 0.5);
+        for (auto* f : { &inShelf, &outShelf, &inHp, &outHp }) f->reset();
+        msIn = msOut = 0;
+        gain = 1.0f;
+    }
+
+    void measureIn (const juce::AudioBuffer<float>& b, int nch)
+    {
+        blockIn = energy (b, nch, inShelf, inHp);
+    }
+
+    // slot = aktiver A/B-Platz; frozen = Bypass aktiv (dann nichts messen, Verstärkung 1)
+    void apply (juce::AudioBuffer<float>& b, int nch, bool on, bool frozen, int slot)
+    {
+        const int n = b.getNumSamples();
+        if (n == 0 || nch == 0) return;
+        const double blockOut = energy (b, nch, outShelf, outHp);
+        const bool jump = slot != lastSlot || frozen != lastFrozen;     // Umschalten: sofort richtig, nicht gleiten
+        lastFrozen = frozen;
+        if (slot != lastSlot)
+        {
+            // Gedächtnis des neuen Platzes übernehmen: Ausgangsmessung passend zum gemerkten Verhältnis setzen
+            lastSlot = slot;
+            const float r = ratio[slot & 1].load();
+            if (r > 0 && msIn > 0) msOut = msIn / ((double) r * r);
+        }
+        if (! frozen)
+        {
+            const double a = std::exp (-(double) n / (sr * 1.0));
+            msIn = a * msIn + (1 - a) * blockIn;
+            msOut = a * msOut + (1 - a) * blockOut;
+        }
+        float target = 1.0f;
+        if (msIn > 1.0e-7 && msOut > 1.0e-10)      // unter -70 dBFS nichts nachführen, Wert halten
+        {
+            const float r = (float) juce::jlimit (0.063, 15.85, std::sqrt (msIn / msOut));   // ±24 dB
+            if (! frozen) ratio[slot & 1] = r;
+            target = r;
+        }
+        else if (ratio[slot & 1].load() > 0) target = ratio[slot & 1].load();
+        if (! on || frozen) target = 1.0f;
+        const float g0 = gain;
+        gain = jump ? target : target + (gain - target) * (float) std::exp (-(double) n / (sr * 0.08));
+        if (std::abs (g0 - 1.0f) < 1.0e-6f && std::abs (gain - 1.0f) < 1.0e-6f) return;
+        for (int c = 0; c < nch; ++c) b.applyGainRamp (c, 0, n, g0, gain);
+    }
+
+    float currentGainDb() const { return dsp::a2db (gain); }
+    std::atomic<float> ratio[2] { { 0.0f }, { 0.0f } };
+
+private:
+    double energy (const juce::AudioBuffer<float>& b, int nch, dsp::Biquad& shelf, dsp::Biquad& hp)
+    {
+        double e = 0;
+        const int n = b.getNumSamples();
+        for (int c = 0; c < std::min (nch, 2); ++c)
+        {
+            const float* x = b.getReadPointer (c);
+            for (int i = 0; i < n; ++i)
+            {
+                const float y = hp.process (shelf.process (x[i], c), c);
+                e += (double) y * y;
+            }
+        }
+        return n > 0 ? e / ((double) n * std::max (1, std::min (nch, 2))) : 0.0;
+    }
+
+    double sr = 48000, msIn = 0, msOut = 0, blockIn = 0;
+    float gain = 1.0f;
+    int lastSlot = 0;
+    bool lastFrozen = false;
+    dsp::Biquad inShelf, outShelf, inHp, outHp;
+};
+
 class ModernProcessor : public juce::AudioProcessor
 {
 public:
+    // Werkspreset: Name und Werte (in Einheiten des Parameters); alles andere bleibt auf Standard
+    struct FactoryPreset
+    {
+        juce::String name;
+        std::vector<std::pair<juce::String, float>> values;
+    };
+    using Snapshot = juce::NamedValueSet;
+
     ModernProcessor (const juce::String& name, const juce::Identifier& stateId, const BusesProperties& buses,
                      juce::AudioProcessorValueTreeState::ParameterLayout layout, double tailSeconds = 0.0)
         : AudioProcessor (buses), apvts (*this, nullptr, stateId, std::move (layout)), pluginName (name), tail (tailSeconds)
     {
+        pBypassBase = apvts.getRawParameterValue ("bypass");
     }
 
     static BusesProperties stereoBuses (bool sidechain = false)
@@ -115,6 +211,21 @@ public:
         return true;
     }
 
+    // Die Plugins implementieren prepare() und process(); die Basis legt den Lautheitsausgleich darum
+    void prepareToPlay (double sampleRate, int blockSize) final
+    {
+        match.prepare (sampleRate);
+        prepare (sampleRate, blockSize);
+    }
+
+    void processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer& midi) final
+    {
+        const int nch = std::min (2, getMainBusNumOutputChannels());
+        match.measureIn (buf, nch);
+        process (buf, midi);
+        match.apply (buf, nch, matchOn.load(), pBypassBase != nullptr && pBypassBase->load() > 0.5f, abSlot.load());
+    }
+
     void releaseResources() override {}
     bool hasEditor() const override { return true; }
     const juce::String getName() const override { return pluginName; }
@@ -132,7 +243,13 @@ public:
 
     void getStateInformation (juce::MemoryBlock& dest) override
     {
-        if (auto xml = apvts.copyState().createXml())
+        auto st = apvts.copyState();
+        st.setProperty ("onnoMatch", matchOn.load(), nullptr);
+        st.setProperty ("onnoSlot", abSlot.load(), nullptr);
+        st.setProperty ("onnoPreset", presetName, nullptr);
+        for (int i = 0; i < 2; ++i)
+            if (slotValid[i]) st.appendChild (snapshotToTree (slots[i], i == 0 ? "OnnoSlotA" : "OnnoSlotB"), nullptr);
+        if (auto xml = st.createXml())
             copyXmlToBinary (*xml, dest);
     }
 
@@ -140,7 +257,20 @@ public:
     {
         if (auto xml = getXmlFromBinary (data, size))
             if (xml->hasTagName (apvts.state.getType()))
-                apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            {
+                auto st = juce::ValueTree::fromXml (*xml);
+                matchOn = (bool) st.getProperty ("onnoMatch", false);
+                abSlot = juce::jlimit (0, 1, (int) st.getProperty ("onnoSlot", 0));
+                presetName = st.getProperty ("onnoPreset", "Init").toString();
+                for (int i = 0; i < 2; ++i)
+                {
+                    auto t = st.getChildWithName (i == 0 ? "OnnoSlotA" : "OnnoSlotB");
+                    slotValid[i] = t.isValid();
+                    if (t.isValid()) { slots[i] = treeToSnapshot (t); st.removeChild (t, nullptr); }
+                }
+                for (auto id : { "onnoMatch", "onnoSlot", "onnoPreset" }) st.removeProperty (id, nullptr);
+                apvts.replaceState (st);
+            }
     }
 
     // Werte über den Namen (allokiert, nur außerhalb von processBlock nutzen)
@@ -160,13 +290,193 @@ public:
         return sc.getReadPointer (std::min (ch, sc.getNumChannels() - 1));
     }
 
+    // ------------------------------------------------------------ Bedien-Gerüst (nur GUI-Thread)
+    // Momentaufnahme aller Parameter außer Bypass (normierte Werte)
+    Snapshot capture() const
+    {
+        Snapshot s;
+        for (auto* p : getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+                if (rp->getParameterID() != "bypass")
+                    s.set (rp->getParameterID(), rp->getValue());
+        return s;
+    }
+
+    void restore (const Snapshot& s)
+    {
+        for (auto& nv : s)
+            if (auto* p = apvts.getParameter (nv.name.toString()))
+            {
+                const float v = (float) nv.value;
+                if (std::abs (p->getValue() - v) < 1.0e-7f) continue;
+                p->beginChangeGesture();
+                p->setValueNotifyingHost (v);
+                p->endChangeGesture();
+            }
+    }
+
+    // vor jeder Bedienung aufrufen: merkt den Zustand davor
+    void pushUndo()
+    {
+        auto s = capture();
+        if (! undoStack.empty() && undoStack.back() == s) return;
+        undoStack.push_back (std::move (s));
+        if (undoStack.size() > 64) undoStack.erase (undoStack.begin());
+        redoStack.clear();
+    }
+
+    bool undo()
+    {
+        const auto cur = capture();
+        while (! undoStack.empty() && undoStack.back() == cur) undoStack.pop_back();   // Schritte ohne Änderung
+        if (undoStack.empty()) return false;
+        redoStack.push_back (cur);
+        restore (undoStack.back());
+        undoStack.pop_back();
+        return true;
+    }
+
+    bool redo()
+    {
+        if (redoStack.empty()) return false;
+        undoStack.push_back (capture());
+        restore (redoStack.back());
+        redoStack.pop_back();
+        return true;
+    }
+
+    bool canUndo() const { return ! undoStack.empty() && ! (undoStack.size() == 1 && undoStack.back() == capture()); }
+    bool canRedo() const { return ! redoStack.empty(); }
+
+    // A/B: zwei Speicherplätze; der aktive folgt immer den Reglern
+    int slot() const { return abSlot.load(); }
+    void selectSlot (int s)
+    {
+        s = juce::jlimit (0, 1, s);
+        if (s == abSlot.load()) return;
+        pushUndo();
+        slots[abSlot.load()] = capture(); slotValid[abSlot.load()] = true;
+        abSlot = s;
+        if (slotValid[s]) restore (slots[s]);
+        else { slots[s] = capture(); slotValid[s] = true; }
+    }
+    void copyToOtherSlot() { const int o = 1 - abSlot.load(); slots[o] = capture(); slotValid[o] = true; }
+
+    // Presets: 0 = Init (Standardwerte), dann Werkspresets, dann eigene Dateien
+    virtual std::vector<FactoryPreset> factoryPresets() const { return {}; }
+
+    juce::File userPresetDir() const
+    {
+        return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                   .getChildFile ("Onno").getChildFile ("Presets").getChildFile (pluginName);
+    }
+
+    juce::Array<juce::File> userPresets() const
+    {
+        auto files = userPresetDir().findChildFiles (juce::File::findFiles, false, "*.onnopreset");
+        files.sort();
+        return files;
+    }
+
+    juce::StringArray presetNames() const
+    {
+        juce::StringArray n { "Init" };
+        for (auto& f : factoryPresets()) n.add (f.name);
+        for (auto& f : userPresets()) n.add (f.getFileNameWithoutExtension());
+        return n;
+    }
+
+    int numFactoryPresets() const { return (int) factoryPresets().size(); }
+    int presetIndex() const { return presetNames().indexOf (presetName); }
+
+    void loadPreset (int index)
+    {
+        const auto names = presetNames();
+        if (! juce::isPositiveAndBelow (index, names.size())) return;
+        pushUndo();
+        Snapshot s;
+        for (auto* p : getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+                if (rp->getParameterID() != "bypass") s.set (rp->getParameterID(), rp->getDefaultValue());
+        const auto fac = factoryPresets();
+        if (index >= 1 && index <= (int) fac.size())
+        {
+            for (auto& [id, val] : fac[(size_t) index - 1].values)
+                if (auto* p = apvts.getParameter (id)) s.set (id, p->convertTo0to1 (val));
+        }
+        else if (index > (int) fac.size())
+        {
+            if (auto xml = juce::XmlDocument::parse (userPresets()[index - 1 - (int) fac.size()]))
+                for (auto* e : xml->getChildWithTagNameIterator ("P"))
+                    if (auto* p = apvts.getParameter (e->getStringAttribute ("id")))
+                        s.set (p->getParameterID(), p->convertTo0to1 ((float) e->getDoubleAttribute ("v")));
+        }
+        restore (s);
+        presetName = names[index];
+    }
+
+    void stepPreset (int dir)
+    {
+        const int n = presetNames().size();
+        const int i = presetIndex();
+        loadPreset (i < 0 ? 0 : (i + dir + n) % n);
+    }
+
+    bool saveUserPreset (const juce::String& rawName)
+    {
+        const auto name = juce::File::createLegalFileName (rawName.trim());
+        if (name.isEmpty()) return false;
+        juce::XmlElement xml ("OnnoPreset");
+        xml.setAttribute ("plugin", pluginName);
+        for (auto* p : getParameters())
+            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+                if (rp->getParameterID() != "bypass")
+                {
+                    auto* e = xml.createNewChildElement ("P");
+                    e->setAttribute ("id", rp->getParameterID());
+                    e->setAttribute ("v", rp->convertFrom0to1 (rp->getValue()));
+                }
+        auto dir = userPresetDir();
+        if (! dir.createDirectory()) return false;
+        if (! xml.writeTo (dir.getChildFile (name + ".onnopreset"))) return false;
+        presetName = name;
+        return true;
+    }
+
     juce::AudioProcessorValueTreeState apvts;
 
     // Anzeige-Pegel (Audio-Thread schreibt, GUI holt mit exchange ab)
     std::atomic<float> inPeak { 0.0f }, outPeak { 0.0f }, grPeak { 0.0f };
 
+    std::atomic<bool> matchOn { false };
+    LoudnessMatch match;
+    juce::String presetName { "Init" };
+
+protected:
+    virtual void prepare (double sampleRate, int blockSize) = 0;
+    virtual void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) = 0;
+
 private:
+    static juce::ValueTree snapshotToTree (const Snapshot& s, const juce::Identifier& type)
+    {
+        juce::ValueTree t (type);
+        for (auto& nv : s) t.setProperty (nv.name, nv.value, nullptr);
+        return t;
+    }
+
+    static Snapshot treeToSnapshot (const juce::ValueTree& t)
+    {
+        Snapshot s;
+        for (int i = 0; i < t.getNumProperties(); ++i) s.set (t.getPropertyName (i), t.getProperty (t.getPropertyName (i)));
+        return s;
+    }
+
     juce::String pluginName;
     double tail;
+    std::atomic<float>* pBypassBase = nullptr;
+    std::vector<Snapshot> undoStack, redoStack;
+    Snapshot slots[2];
+    bool slotValid[2] { false, false };
+    std::atomic<int> abSlot { 0 };
 };
 } // namespace onno

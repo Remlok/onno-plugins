@@ -9,8 +9,8 @@ class GateProcessor : public onno::ModernProcessor
 {
 public:
     GateProcessor();
-    void prepareToPlay (double sampleRate, int) override;
-    void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    void prepare (double sampleRate, int) override;
+    void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override;
 
     std::atomic<float> detPeak { 0.0f }, openPeak { 0.0f };

@@ -14,8 +14,8 @@ public:
     static const juce::StringArray profileNames;
 
     TameProcessor();
-    void prepareToPlay (double sampleRate, int) override;
-    void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    void prepare (double sampleRate, int) override;
+    void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override;
 
     void applyProfile (int p);

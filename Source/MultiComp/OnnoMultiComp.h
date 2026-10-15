@@ -13,8 +13,8 @@ public:
     static const char* const bandNames[numBands];
 
     MultiCompProcessor();
-    void prepareToPlay (double sampleRate, int) override;
-    void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    void prepare (double sampleRate, int) override;
+    void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override;
 
     static juce::String id (int b, const char* p) { return "b" + juce::String (b + 1) + p; }

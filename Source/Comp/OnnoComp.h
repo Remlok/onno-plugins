@@ -9,8 +9,8 @@ class CompProcessor : public onno::ModernProcessor
 {
 public:
     CompProcessor();
-    void prepareToPlay (double sampleRate, int) override;
-    void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    void prepare (double sampleRate, int) override;
+    void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override;
 
     // höchster Detektorpegel im Block (dB), für den Punkt auf der Kennlinie
