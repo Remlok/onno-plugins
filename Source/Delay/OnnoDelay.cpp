@@ -29,6 +29,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout DelayProcessor::layout()
     prm::lin (p, "dry", "Dry", -60, 6, 0, "dB");
     prm::lin (p, "wet", "Wet", -60, 6, -6, "dB");
     prm::lin (p, "duck", "Ducking", 0, 100, 0, "%");
+    Analog::addParams (p);
     prm::bl (p, "bypass", "Bypass", false);
     return prm::done (p);
 }
@@ -39,6 +40,7 @@ DelayProcessor::DelayProcessor() : ModernProcessor ("Onno Delay", "OnnoDelay", s
     for (int t = 0; t < numTaps; ++t)
         for (int k = 0; k < numP; ++k) taps[(size_t) t].p[(size_t) k] = raw (id (t, names[k]));
     pDry = raw ("dry"); pWet = raw ("wet"); pDuck = raw ("duck"); pBypass = raw ("bypass");
+    for (auto& t : taps) t.analog.attach (*this);
 }
 
 float DelayProcessor::tapMs (int t, double tempo) const
@@ -60,6 +62,7 @@ void DelayProcessor::prepareToPlay (double sampleRate, int)
         for (auto& b : t.buf) b.assign ((size_t) (maxMs * 0.001 * sr) + 8, 0.0f);
         t.w = 0; t.cur = -1; t.hpF = t.lpF = -1;
         t.hp.reset(); t.lp.reset();
+        t.analog.prepare (sr);
     }
     duckEnv = 0; duckS = 1;
     dryS.reset (sr, 0.03); dryS.setCurrentAndTargetValue (pDry->load() <= -59.9f ? 0.0f : dsp::db2a (pDry->load()));
@@ -106,6 +109,7 @@ void DelayProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuff
         const float hf = p[pHp]->load(), lf = p[pLp]->load();
         if (hf != tp.hpF) { tp.hpF = hf; tp.hp.highPass (sr, std::min ((double) hf, sr * 0.45), 0.7071); }
         if (lf != tp.lpF) { tp.lpF = lf; if (lf < 19900.0f && lf < sr * 0.45) tp.lp.lowPass (sr, lf, 0.7071); else tp.lp.identity(); }
+        tp.analog.beginBlock();
         if (! x.on && tp.wasOn) { for (auto& b : tp.buf) std::fill (b.begin(), b.end(), 0.0f); tp.hp.reset(); tp.lp.reset(); }
         tp.wasOn = x.on;
     }
@@ -129,6 +133,12 @@ void DelayProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuff
             float yr = tp.buf[1][(size_t) i1] + fr * (tp.buf[1][(size_t) i0] - tp.buf[1][(size_t) i1]);
             if (tp.hpF > 20.5f) { yl = tp.hp.process (yl, 0); yr = tp.hp.process (yr, 1); }
             yl = tp.lp.process (yl, 0); yr = tp.lp.process (yr, 1);
+            if (tp.analog.active())
+            {
+                // wie ein Bandecho: jede Wiederholung läuft erneut durch die Sättigung
+                tp.analog.advance();
+                yl = tp.analog.tick (yl, 0, false); yr = tp.analog.tick (yr, 1, false);
+            }
             if (x.pp)
             {
                 tp.buf[0][(size_t) tp.w] = 0.5f * (xl + xr) + x.fb * yr;
@@ -171,7 +181,7 @@ namespace
 const juce::Rectangle<float> rDisplay { 16, 50, 868, 236 }, rTime { 36, 70, 828, 186 };
 }
 
-DelayEditor::DelayEditor (DelayProcessor& p) : ModernEditor (p, p.apvts, "DELAY", 900, 430), proc (p)
+DelayEditor::DelayEditor (DelayProcessor& p) : ModernEditor (p, p.apvts, "DELAY", 900, 470), proc (p)
 {
     display = rDisplay;
     addBypass();
@@ -188,7 +198,9 @@ DelayEditor::DelayEditor (DelayProcessor& p) : ModernEditor (p, p.apvts, "DELAY"
                          [this] { toggle (DelayProcessor::id (sel, "sync")); selectTap (sel); }, modern::accent() });
     buttons.push_back ({ { 442, 306, 80, 20 }, [] { return String ("PING-PONG"); }, [this] { return flag (DelayProcessor::id (sel, "pp")); },
                          [this] { toggle (DelayProcessor::id (sel, "pp")); }, mc::purple() });
-    knobs.reserve (10);
+    knobs.reserve (12);
+    addAnalogStrip();
+    stripReady = true;
     selectTap (0);
 }
 
@@ -211,6 +223,7 @@ void DelayEditor::selectTap (int t)
     knobs.push_back ({ "dry", "DRY", 620, y, 24, modern::accent(), [] (float v) { return v <= -59.9f ? String ("AUS") : fmt::db (v); } });
     knobs.push_back ({ "wet", "WET", 700, y, 24, modern::accent(), [] (float v) { return v <= -59.9f ? String ("AUS") : fmt::db (v); } });
     knobs.push_back ({ "duck", "DUCKING", 780, y, 24, mc::amber(), [] (float v) { return fmt::pct (v); } });
+    if (stripReady) { MKnob d { "drive", "DRIVE", 548, H - 27, 11, modern::warm(), [] (float v) { return fmt::pct (v); } }; d.compact = true; knobs.push_back (d); }
     repaint();
 }
 

@@ -3,6 +3,7 @@
 #include "Common/ModernProcessor.h"
 #include "Common/ModernEditor.h"
 #include "Common/OnnoDSP.h"
+#include "Common/Analog.h"
 
 class CompProcessor : public onno::ModernProcessor
 {
@@ -25,6 +26,7 @@ private:
     float env = 0, ms = 0, hpfFreq = -1;
     onno::dsp::Biquad hpf;
     juce::SmoothedValue<float> outGain, mixS;
+    onno::Analog analog;
 };
 
 class CompEditor : public onno::ModernEditor

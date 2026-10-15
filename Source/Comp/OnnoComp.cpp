@@ -19,6 +19,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout CompProcessor::layout()
     prm::ch (p, "source", "Detector Input", { "Main", "Sidechain" }, 0);
     prm::bl (p, "autoGain", "Auto Makeup", false);
     prm::bl (p, "limit", "Limit Output", false);
+    Analog::addParams (p);
     prm::bl (p, "bypass", "Bypass", false);
     return prm::done (p);
 }
@@ -28,6 +29,7 @@ CompProcessor::CompProcessor() : ModernProcessor ("Onno Comp", "OnnoComp", stere
     pThr = raw ("thr"); pRatio = raw ("ratio"); pKnee = raw ("knee"); pAtt = raw ("attack"); pRel = raw ("release");
     pLa = raw ("lookahead"); pRms = raw ("rms"); pHpf = raw ("scHpf"); pMix = raw ("mix"); pOut = raw ("output");
     pSrc = raw ("source"); pAuto = raw ("autoGain"); pLimit = raw ("limit"); pBypass = raw ("bypass");
+    analog.attach (*this);
 }
 
 void CompProcessor::prepareToPlay (double sampleRate, int)
@@ -36,6 +38,7 @@ void CompProcessor::prepareToPlay (double sampleRate, int)
     for (auto& d : dl) d.assign ((size_t) (0.021 * sr) + 2, 0.0f);
     dlPos = 0; env = 0; ms = 0; hpfFreq = -1;
     hpf.reset();
+    analog.prepare (sr);
     la = (int) std::round (pLa->load() * 0.001 * sr);
     setLatencySamples (la);
     outGain.reset (sr, 0.03); outGain.setCurrentAndTargetValue (dsp::db2a (pOut->load()));
@@ -70,6 +73,7 @@ void CompProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffe
     const bool limit = pLimit->load() > 0.5f;
     outGain.setTargetValue (dsp::db2a (pOut->load()));
     mixS.setTargetValue (pMix->load() * 0.01f);
+    analog.beginBlock();
 
     const float* scL = nullptr; const float* scR = nullptr;
     if (pSrc->load() > 0.5f) { scL = sidechain (buf, 0); scR = sidechain (buf, 1); }
@@ -105,6 +109,12 @@ void CompProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffe
             grMin = std::min (grMin, env);
         }
         float ol = yl * g, orr = yr * g;
+        if (! bypass && analog.active())
+        {
+            // Färbung nach Kompression und Mix, vor dem Limit
+            analog.advance();
+            ol = analog.tick (ol, 0); orr = analog.tick (orr, 1);
+        }
         if (limit && ! bypass) { ol = juce::jlimit (-1.0f, 1.0f, ol); orr = juce::jlimit (-1.0f, 1.0f, orr); }
         L[i] = ol;
         if (nch > 1) R[i] = orr;
@@ -130,7 +140,7 @@ const juce::Rectangle<float> rDisplay { 16, 50, 868, 236 }, rCurve { 28, 62, 212
 float histY (float db) { return rHist.getY() + rHist.getHeight() * juce::jlimit (0.0f, 1.0f, -db / 60.0f); }
 }
 
-CompEditor::CompEditor (CompProcessor& p) : ModernEditor (p, p.apvts, "COMP", 900, 430), proc (p)
+CompEditor::CompEditor (CompProcessor& p) : ModernEditor (p, p.apvts, "COMP", 900, 470), proc (p)
 {
     display = rDisplay;
     addBypass();
@@ -158,6 +168,7 @@ CompEditor::CompEditor (CompProcessor& p) : ModernEditor (p, p.apvts, "COMP", 90
                          [this] { toggle ("autoGain"); }, mc::green() });
     buttons.push_back ({ { 776, 368, 96, 20 }, [] { return String ("LIMIT 0 dB"); }, [this] { return flag ("limit"); },
                          [this] { toggle ("limit"); }, mc::red() });
+    addAnalogStrip();
 }
 
 void CompEditor::tick()

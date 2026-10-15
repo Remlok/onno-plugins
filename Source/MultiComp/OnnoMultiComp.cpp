@@ -25,6 +25,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MultiCompProcessor::layout()
     prm::lg (p, "x3", "Crossover High", 1000, 16000, 5000, "Hz");
     prm::lin (p, "mix", "Mix", 0, 100, 100, "%");
     prm::lin (p, "output", "Output", -24, 24, 0, "dB");
+    Analog::addParams (p);
     prm::bl (p, "bypass", "Bypass", false);
     return prm::done (p);
 }
@@ -38,6 +39,7 @@ MultiCompProcessor::MultiCompProcessor() : ModernProcessor ("Onno MultiComp", "O
         bandGr[(size_t) b].store (0.0f);
     }
     pX1 = raw ("x1"); pX2 = raw ("x2"); pX3 = raw ("x3"); pMix = raw ("mix"); pOut = raw ("output"); pBypass = raw ("bypass");
+    analog.attach (*this);
 }
 
 void MultiCompProcessor::crossovers (float& x1, float& x2, float& x3) const
@@ -56,6 +58,7 @@ void MultiCompProcessor::prepareToPlay (double sampleRate, int)
     for (auto* f : { &lp2[0], &lp2[1], &hp2[0], &hp2[1], &ap3, &lp1[0], &lp1[1], &hp1[0], &hp1[1], &ap1, &lp3[0], &lp3[1], &hp3[0], &hp3[1] })
         f->reset();
     env.fill (0.0f);
+    analog.prepare (sr);
     for (int b = 0; b < numBands; ++b)
     {
         makeup[(size_t) b].reset (sr, 0.03);
@@ -99,6 +102,7 @@ void MultiCompProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::Midi
     }
     outS.setTargetValue (dsp::db2a (pOut->load()));
     mixS.setTargetValue (pMix->load() * 0.01f);
+    analog.beginBlock();
 
     std::array<float, numBands> grMin {};
     float outPk = 0;
@@ -138,6 +142,7 @@ void MultiCompProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::Midi
         const float dr = band[0][1] + band[1][1] + band[2][1] + band[3][1];
         ol = (m * ol + (1 - m) * (anySolo ? ol : dl)) * og;
         orr = (m * orr + (1 - m) * (anySolo ? orr : dr)) * og;
+        if (analog.active()) { analog.advance(); ol = analog.tick (ol, 0); orr = analog.tick (orr, 1); }
         L[i] = ol;
         if (nch > 1) R[i] = orr;
         outPk = std::max (outPk, std::max (std::abs (ol), std::abs (orr)));
@@ -160,7 +165,7 @@ const juce::Rectangle<float> rDisplay { 16, 50, 868, 236 };
 Colour bandColour (int b) { static const int idx[] = { 0, 2, 4, 6 }; return mc::band (idx[b]); }
 }
 
-MultiCompEditor::MultiCompEditor (MultiCompProcessor& p) : ModernEditor (p, p.apvts, "MULTICOMP", 900, 430), proc (p)
+MultiCompEditor::MultiCompEditor (MultiCompProcessor& p) : ModernEditor (p, p.apvts, "MULTICOMP", 900, 470), proc (p)
 {
     display = rDisplay;
     addBypass();
@@ -171,6 +176,8 @@ MultiCompEditor::MultiCompEditor (MultiCompProcessor& p) : ModernEditor (p, p.ap
                          [this] { toggle (MultiCompProcessor::id (sel, "solo")); }, mc::amber() });
     buttons.push_back ({ { 406, 306, 56, 20 }, [] { return String ("BAND AUS"); }, [this] { return flag (MultiCompProcessor::id (sel, "byp")); },
                          [this] { toggle (MultiCompProcessor::id (sel, "byp")); }, modern::warm() });
+    addAnalogStrip();
+    stripReady = true;
     selectBand (0);
 }
 
@@ -190,6 +197,7 @@ void MultiCompEditor::selectBand (int b)
     knobs.push_back ({ "x3", "X-OVER 3", 664, y, 20, modern::accent(), [] (float v) { return fmt::hz (v); } });
     knobs.push_back ({ "mix", "MIX", 744, y, 22, mc::green(), [] (float v) { return fmt::pct (v); } });
     knobs.push_back ({ "output", "OUTPUT", 822, y, 22, modern::accent(), [] (float v) { return fmt::db (v); }, true });
+    if (stripReady) { MKnob d { "drive", "DRIVE", 548, H - 27, 11, modern::warm(), [] (float v) { return fmt::pct (v); } }; d.compact = true; knobs.push_back (d); }
     repaint();
 }
 

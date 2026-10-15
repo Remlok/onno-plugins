@@ -3,6 +3,7 @@
 #include "Common/ModernProcessor.h"
 #include "Common/ModernEditor.h"
 #include "Common/OnnoDSP.h"
+#include "Common/Analog.h"
 
 class DelayProcessor : public onno::ModernProcessor
 {
@@ -33,6 +34,7 @@ private:
         float cur = -1, hpF = -1, lpF = -1;
         bool wasOn = false;
         onno::dsp::Biquad hp, lp;
+        onno::Analog analog;
         std::array<std::atomic<float>*, numP> p {};
     };
     std::array<Tap, numTaps> taps;
@@ -67,6 +69,7 @@ private:
 
     DelayProcessor& proc;
     int sel = 0, hoverTap = -1, dragTap = -1;
+    bool stripReady = false;
     bool selSync = false;
     float span = 2000;
 };

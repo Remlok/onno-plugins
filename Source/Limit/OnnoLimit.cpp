@@ -9,6 +9,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout LimitProcessor::layout()
     prm::lin (p, "thr", "Threshold", -24, 0, 0, "dB");
     prm::lin (p, "ceiling", "Ceiling", -12, 0, -0.3f, "dB");
     prm::lg (p, "release", "Release", 1, 1000, 60, "ms");
+    Analog::addParams (p);
     prm::bl (p, "bypass", "Bypass", false);
     return prm::done (p);
 }
@@ -16,6 +17,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout LimitProcessor::layout()
 LimitProcessor::LimitProcessor() : ModernProcessor ("Onno Limit", "OnnoLimit", stereoBuses(), layout())
 {
     pThr = raw ("thr"); pCeil = raw ("ceiling"); pRel = raw ("release"); pBypass = raw ("bypass");
+    analog.attach (*this);
 }
 
 void LimitProcessor::prepareToPlay (double sampleRate, int)
@@ -29,6 +31,7 @@ void LimitProcessor::prepareToPlay (double sampleRate, int)
     dqi.assign ((size_t) L + 2, 0);
     dlPos = boxPos = dqHead = dqSize = 0;
     t = 0; env = 1;
+    analog.prepare (sr);
     setLatencySamples (L - 1);
     driveS.reset (sr, 0.02); driveS.setCurrentAndTargetValue (dsp::db2a (-pThr->load()));
     ceilS.reset (sr, 0.02); ceilS.setCurrentAndTargetValue (dsp::db2a (pCeil->load()));
@@ -47,14 +50,20 @@ void LimitProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuff
     driveS.setTargetValue (dsp::db2a (-pThr->load()));
     ceilS.setTargetValue (dsp::db2a (pCeil->load()));
     const float relC = dsp::coef (pRel->load(), sr);
+    analog.beginBlock();
+    const bool sat = analog.active() && ! bypass;
     const int cap = (int) dqv.size(), D = (int) dl[0].size();
     float inPk = 0, drvPk = 0, outPk = 0, gMin = 1;
 
     for (int i = 0; i < n; ++i, ++t)
     {
         const float xl = Lp[i], xr = Rp[i];
-        const float drive = driveS.getNextValue(), ceil = ceilS.getNextValue();
-        const float pk = std::max (std::abs (xl), std::abs (xr)) * drive;
+        float drive = driveS.getNextValue();
+        const float ceil = ceilS.getNextValue();
+        // Sättigung vor dem Limiter (nach dem Threshold-Gain), danach ohne weiteres Gain
+        float sl = xl, sr2 = xr;
+        if (sat) { analog.advance(); sl = analog.tick (xl * drive, 0); sr2 = analog.tick (xr * drive, 1); drive = 1.0f; }
+        const float pk = std::max (std::abs (sl), std::abs (sr2)) * drive;
         const float r = pk > ceil ? ceil / pk : 1.0f;
 
         // gleitendes Minimum über L Samples (monotone Warteschlange)
@@ -72,7 +81,7 @@ void LimitProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuff
         const float g = (float) (boxSum / L);
 
         // Audio um L-1 Samples verzögern
-        dl[0][(size_t) dlPos] = xl; dl[1][(size_t) dlPos] = xr;
+        dl[0][(size_t) dlPos] = sl; dl[1][(size_t) dlPos] = sr2;
         int rp = dlPos - (L - 1); if (rp < 0) rp += D;
         const float yl = dl[0][(size_t) rp], yr = dl[1][(size_t) rp];
         if (++dlPos >= D) dlPos = 0;
@@ -109,13 +118,14 @@ const juce::Rectangle<float> rDisplay { 16, 50, 728, 220 }, rHist { 28, 62, 704,
 float histY (float db) { return rHist.getY() + rHist.getHeight() * juce::jlimit (0.0f, 1.0f, (6.0f - db) / 42.0f); }
 }
 
-LimitEditor::LimitEditor (LimitProcessor& p) : ModernEditor (p, p.apvts, "LIMIT", 760, 400), proc (p)
+LimitEditor::LimitEditor (LimitProcessor& p) : ModernEditor (p, p.apvts, "LIMIT", 760, 440), proc (p)
 {
     display = rDisplay;
     addBypass();
     knobs.push_back ({ "thr", "THRESHOLD", 80, 336, 26, mc::red(), [] (float v) { return fmt::db (v); } });
     knobs.push_back ({ "ceiling", "CEILING", 176, 336, 26, modern::warm(), [] (float v) { return fmt::db (v); } });
     knobs.push_back ({ "release", "RELEASE", 272, 336, 26, mc::amber(), [] (float v) { return fmt::ms (v); } });
+    addAnalogStrip();
 }
 
 void LimitEditor::tick()

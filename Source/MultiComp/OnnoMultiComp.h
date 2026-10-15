@@ -4,6 +4,7 @@
 #include "Common/ModernEditor.h"
 #include "Common/Analyzer.h"
 #include "Common/OnnoDSP.h"
+#include "Common/Analog.h"
 
 class MultiCompProcessor : public onno::ModernProcessor
 {
@@ -35,6 +36,7 @@ private:
     std::array<float, numBands> env {};
     std::array<juce::SmoothedValue<float>, numBands> makeup;
     juce::SmoothedValue<float> outS, mixS;
+    onno::Analog analog;
 };
 
 class MultiCompEditor : public onno::ModernEditor
@@ -58,5 +60,6 @@ private:
 
     MultiCompProcessor& proc;
     int sel = 0, hoverX = -1, dragX = -1;
+    bool stripReady = false;
     std::array<float, MultiCompProcessor::numBands> gr {};
 };

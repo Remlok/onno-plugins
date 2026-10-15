@@ -3,6 +3,7 @@
 #include "Common/ModernProcessor.h"
 #include "Common/ModernEditor.h"
 #include "Common/Analyzer.h"
+#include "Common/Analog.h"
 #include "Common/OnnoDSP.h"
 
 class EQProcessor : public onno::ModernProcessor
@@ -42,6 +43,7 @@ private:
     std::array<Band, numBands> cur;
     double sr = 48000;
     juce::SmoothedValue<float> outGain;
+    onno::Analog analog;
 };
 
 class EQEditor : public onno::ModernEditor
@@ -70,5 +72,6 @@ private:
 
     EQProcessor& proc;
     int sel = 2, hoverNode = -1, dragNode = -1;
+    bool stripReady = false;
     static constexpr float range = 18.0f;
 };

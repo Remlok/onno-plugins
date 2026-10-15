@@ -3,6 +3,7 @@
 #include "Common/ModernProcessor.h"
 #include "Common/ModernEditor.h"
 #include "Common/OnnoDSP.h"
+#include "Common/Analog.h"
 
 class LimitProcessor : public onno::ModernProcessor
 {
@@ -26,6 +27,7 @@ private:
     double boxSum = 0;
     float env = 1;
     juce::SmoothedValue<float> driveS, ceilS;
+    onno::Analog analog;
 };
 
 class LimitEditor : public onno::ModernEditor

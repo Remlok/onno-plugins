@@ -3,6 +3,7 @@
 #include "Common/ModernProcessor.h"
 #include "Common/ModernEditor.h"
 #include "Common/OnnoDSP.h"
+#include "Common/Analog.h"
 
 class GateProcessor : public onno::ModernProcessor
 {
@@ -23,6 +24,7 @@ private:
     float det = 0, env = 0, hpfF = -1, lpfF = -1;
     bool open = false;
     onno::dsp::Biquad hpf, lpf;
+    onno::Analog analog;
 };
 
 class GateEditor : public onno::ModernEditor

@@ -17,6 +17,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout GateProcessor::layout()
     prm::lg (p, "scLpf", "Detector LPF", 1000, 20000, 20000, "Hz");
     prm::ch (p, "source", "Detector Input", { "Main", "Sidechain" }, 0);
     prm::bl (p, "listen", "Detector Listen", false);
+    Analog::addParams (p);
     prm::bl (p, "bypass", "Bypass", false);
     return prm::done (p);
 }
@@ -26,6 +27,7 @@ GateProcessor::GateProcessor() : ModernProcessor ("Onno Gate", "OnnoGate", stere
     pThr = raw ("thr"); pHyst = raw ("hyst"); pAtt = raw ("attack"); pHold = raw ("hold"); pRel = raw ("release");
     pRange = raw ("range"); pLa = raw ("lookahead"); pHpf = raw ("scHpf"); pLpf = raw ("scLpf");
     pSrc = raw ("source"); pListen = raw ("listen"); pBypass = raw ("bypass");
+    analog.attach (*this);
 }
 
 void GateProcessor::prepareToPlay (double sampleRate, int)
@@ -34,6 +36,7 @@ void GateProcessor::prepareToPlay (double sampleRate, int)
     for (auto& d : dl) d.assign ((size_t) (0.011 * sr) + 2, 0.0f);
     dlPos = 0; det = 0; env = 0; open = false; holdCnt = 0; hpfF = lpfF = -1;
     hpf.reset(); lpf.reset();
+    analog.prepare (sr);
     la = (int) std::round (pLa->load() * 0.001 * sr);
     setLatencySamples (la);
 }
@@ -58,6 +61,7 @@ void GateProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffe
     const bool useH = hf > 20.5f, useL = lf < 19900.0f && lf < sr * 0.45;
     const bool bypass = pBypass->load() > 0.5f, listen = pListen->load() > 0.5f;
 
+    analog.beginBlock();
     const float* scL = nullptr; const float* scR = nullptr;
     if (pSrc->load() > 0.5f) { scL = sidechain (buf, 0); scR = sidechain (buf, 1); }
 
@@ -92,6 +96,7 @@ void GateProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffe
             else
             {
                 const float g = rng + (1.0f - rng) * env;
+                if (analog.active()) { analog.advance(); yl = analog.tick (yl, 0); yr = analog.tick (yr, 1); }
                 yl *= g; yr *= g;
                 gMin = std::min (gMin, g);
             }
@@ -121,7 +126,7 @@ const juce::Rectangle<float> rDisplay { 16, 50, 868, 236 }, rHist { 28, 62, 760,
 float histY (float db) { return rHist.getY() + rHist.getHeight() * juce::jlimit (0.0f, 1.0f, -db / 80.0f); }
 }
 
-GateEditor::GateEditor (GateProcessor& p) : ModernEditor (p, p.apvts, "GATE", 900, 430), proc (p)
+GateEditor::GateEditor (GateProcessor& p) : ModernEditor (p, p.apvts, "GATE", 900, 470), proc (p)
 {
     display = rDisplay;
     addBypass();
@@ -146,6 +151,7 @@ GateEditor::GateEditor (GateProcessor& p) : ModernEditor (p, p.apvts, "GATE", 90
                          [this] { return value ("source") > 0.5f; }, [this] { toggle ("source"); }, mc::blue() });
     buttons.push_back ({ { 776, 352, 96, 20 }, [] { return String ("LISTEN"); }, [this] { return flag ("listen"); },
                          [this] { toggle ("listen"); }, mc::amber() });
+    addAnalogStrip();
 }
 
 void GateEditor::tick()

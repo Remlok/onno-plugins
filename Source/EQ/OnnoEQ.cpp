@@ -31,6 +31,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout EQProcessor::layout()
         prm::ch (p, id (b, "slope"), n + "Slope", { "12 dB/oct", "24 dB/oct", "48 dB/oct" }, 1);
     }
     prm::lin (p, "output", "Output", -24, 24, 0, "dB");
+    Analog::addParams (p);
     prm::ch (p, "analyzer", "Analyzer", { "Off", "Pre", "Post" }, 2, false);
     prm::bl (p, "bypass", "Bypass", false);
     return prm::done (p);
@@ -42,12 +43,14 @@ EQProcessor::EQProcessor() : ModernProcessor ("Onno EQ", "OnnoEQ", stereoBuses()
     for (int b = 0; b < numBands; ++b)
         for (int k = 0; k < 6; ++k) bp[(size_t) b][(size_t) k] = raw (id (b, names[k]));
     pOutput = raw ("output"); pAnalyzer = raw ("analyzer"); pBypass = raw ("bypass");
+    analog.attach (*this);
 }
 
 void EQProcessor::prepareToPlay (double sampleRate, int)
 {
     sr = sampleRate;
     analyzer.prepare (sr);
+    analog.prepare (sr);
     for (int b = 0; b < numBands; ++b)
     {
         cur[(size_t) b] = band (b);
@@ -129,6 +132,7 @@ void EQProcessor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&
                 }
             }
         }
+        analog.process (buf.getWritePointer (0), buf.getWritePointer (nch > 1 ? 1 : 0), n, nch);
         outGain.setTargetValue (dsp::db2a (pOutput->load()));
         for (int i = 0; i < n; ++i)
         {
@@ -152,7 +156,7 @@ namespace
 const juce::Rectangle<float> rDisplay { 16, 50, 868, 236 };
 }
 
-EQEditor::EQEditor (EQProcessor& p) : ModernEditor (p, p.apvts, "EQ", 900, 430), proc (p)
+EQEditor::EQEditor (EQProcessor& p) : ModernEditor (p, p.apvts, "EQ", 900, 470), proc (p)
 {
     display = rDisplay;
     addBypass();
@@ -185,8 +189,11 @@ EQEditor::EQEditor (EQProcessor& p) : ModernEditor (p, p.apvts, "EQ", 900, 430),
                          } });
     buttons.push_back ({ { 600, 390, 120, 18 }, [] { return String ("ALLE FLACH"); }, [] { return false; },
                          [this] { for (int b = 0; b < EQProcessor::numBands; ++b) setValue (EQProcessor::id (b, "gain"), 0); } });
+    addAnalogStrip();
+    stripReady = true;
     selectBand (2);
 }
+
 
 void EQEditor::selectBand (int b)
 {
@@ -197,6 +204,7 @@ void EQEditor::selectBand (int b)
     knobs.push_back ({ EQProcessor::id (b, "gain"), "GAIN", 150, 376, 22, c, [] (float v) { return fmt::db (v); }, true });
     knobs.push_back ({ EQProcessor::id (b, "q"), "Q", 230, 376, 22, c, [] (float v) { return String (v, v < 10 ? 2 : 1); } });
     knobs.push_back ({ "output", "OUTPUT", 810, 372, 26, modern::accent(), [] (float v) { return fmt::db (v); }, true });
+    if (stripReady) { MKnob d { "drive", "DRIVE", 548, H - 27, 11, modern::warm(), [] (float v) { return fmt::pct (v); } }; d.compact = true; knobs.push_back (d); }
     repaint();
 }
 

@@ -92,6 +92,7 @@ struct MKnob
     Colour c = modern::accent();
     std::function<String (float)> format;   // leer = Text des Parameters
     bool bipolar = false;                   // Bogen von der Mitte aus
+    bool compact = false;                   // Beschriftung links, Wert rechts (kleine Regler in Leisten)
 };
 
 struct MButton
@@ -143,6 +144,7 @@ public:
 
         modern::header (g, name);
         drawBackground (g);
+        if (analogStrip) drawAnalogStrip (g);
         if (! display.isEmpty())
         {
             g.setColour (mc::screen()); g.fillRoundedRectangle (display, 8);
@@ -298,6 +300,37 @@ protected:
         ctext (g, text, W * 0.5f, 17, 11);
     }
 
+    // Leiste "ANALOG" am unteren Rand: Klangfarbe wählen und Drive einstellen
+    void addAnalogStrip()
+    {
+        analogStrip = true;
+        const float y = H - 37;
+        for (int m = 0; m < 5; ++m)
+        {
+            static const char* const lab[] = { "CLEAN", "BRIT", "CONSOLE", "TUBE", "FET" };
+            buttons.push_back ({ { 100.0f + m * 74.0f, y, 68, 20 }, [m] { return String (lab[m]); },
+                                 [this, m] { return (int) value ("analog") == m; }, [this, m] { setValue ("analog", (float) m); },
+                                 m == 0 ? modern::dim() : modern::warm() });
+        }
+        MKnob k { "drive", "DRIVE", 548, H - 27, 11, modern::warm(), [] (float v) { return fmt::pct (v); } };
+        k.compact = true;
+        knobs.push_back (k);
+    }
+
+    void drawAnalogStrip (Graphics& g)
+    {
+        section (g, { 16, H - 44, W - 32, 34 });
+        g.setFont (font (10)); g.setColour (modern::warm());
+        ltext (g, "ANALOG", 30, H - 33, 10);
+        const int m = (int) value ("analog");
+        g.setFont (font (10, false)); g.setColour (modern::dim());
+        static const char* const d[] = { "transparent, keine Färbung", "Übertrager: dichte Bässe, weiche Höhen",
+                                         "Konsole: sauber, ungerade Obertöne, Glanz", "Röhre: warme geradzahlige Obertöne",
+                                         "FET wie 1176: bissig, Präsenz" };
+        g.drawFittedText (String::fromUTF8 (d[juce::jlimit (0, 4, m)]),
+                          juce::Rectangle<float> (616, H - 37, W - 646, 20).toNearestInt(), juce::Justification::centredLeft, 1, 0.8f);
+    }
+
     void section (Graphics& g, juce::Rectangle<float> r, const String& title = {})
     {
         modern::panelRect (g, r.getX(), r.getY(), r.getWidth(), r.getHeight());
@@ -326,6 +359,15 @@ protected:
         g.setColour (rgb (24, 27, 34)); g.fillEllipse (cx - ri, cy - ri, 2 * ri, 2 * ri);
         g.setColour (hv ? modern::dim() : rgb (56, 62, 75)); g.drawEllipse (cx - ri, cy - ri, 2 * ri, 2 * ri, 1.0f);
         g.setColour (k.c);
+        if (k.compact)
+        {
+            line (g, cx + std::sin (a) * ri * 0.2f, cy - std::cos (a) * ri * 0.2f, cx + std::sin (a) * ri * 0.9f, cy - std::cos (a) * ri * 0.9f, 1.8f);
+            g.setFont (font (9.5f)); g.setColour (modern::dim());
+            rtext (g, k.label, cx - r - 8, cy - 6, 10);
+            g.setFont (font (10, hv)); g.setColour (hv ? juce::Colours::white : modern::text().withAlpha (0.88f));
+            ltext (g, k.format ? k.format (p->convertFrom0to1 (n)) : p->getCurrentValueAsText(), cx + r + 8, cy - 6, 10);
+            return;
+        }
         line (g, cx + std::sin (a) * ri * 0.35f, cy - std::cos (a) * ri * 0.35f, cx + std::sin (a) * ri * 0.8f, cy - std::cos (a) * ri * 0.8f, 2.2f);
         g.setFont (font (r > 20 ? 9.5f : 9.0f)); g.setColour (modern::dim());
         ctext (g, k.label, cx, cy - r - 14, 10);
@@ -360,6 +402,7 @@ private:
     float s = 1.0f, ox = 0.0f, oy = 0.0f;
     float dragNorm = 0.0f, lastY = 0.0f;
     bool dragDisplay = false;
+    bool analogStrip = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ModernEditor)
 };
