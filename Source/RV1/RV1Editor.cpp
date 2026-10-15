@@ -10,7 +10,7 @@ enum Fmt { fMs, fSec, fPct, fChar, fHz, fWidth, fMix };
 struct KnobDef { const char* id; const char* label; float cx, cy, r; int ring; Fmt fmt; float s0, s1, s2; };
 
 // Lage im 1000x340-Raster
-const KnobDef knobs[] = {
+const KnobDef knobDefs[] = {
     { "predelay", "PRE-DELAY", 407, 100, 26, ringNone, fMs, 0, 60, 250 },
     { "decay", "DECAY", 532, 100, 26, ringRed, fSec, 0.2f, 2, 20 },
     { "size", "SIZE", 657, 100, 26, ringNone, fPct, 0, 50, 100 },
@@ -23,13 +23,29 @@ const KnobDef knobs[] = {
     { "lowCut", "LOW CUT", 881, 205, 16, ringNone, fHz, 20, 140, 1000 },
     { "highCut", "HIGH CUT", 951, 205, 16, ringNone, fHz, 1000, 4500, 20000 },
 };
-constexpr int NK = (int) std::size (knobs);
+constexpr int NK = (int) std::size (knobDefs);
 
+// Raster des Geräts (ohne Kopfzeile)
 const juce::Rectangle<float> rOled { 24, 30, 310, 166 }, rPrev { 24, 222, 40, 16 }, rNext { 24, 266, 40, 16 },
                              rSend { 430, 290, 80, 14 }, rFreeze { 560, 290, 70, 14 }, rAlgo { 680, 290, 80, 14 },
-                             rView { 862, 290, 50, 14 }, rBypass { 926, 258, 48, 48 };
+                             rBypass { 926, 258, 48, 48 };
+
+const std::map<String, const char*> knobHelp = {
+    { "predelay", "Zeit bis der Hall einsetzt. Mehr Pre-Delay trennt den Hall vom Anschlag, der Klang bleibt vorne." },
+    { "decay", "Nachhallzeit (RT60). Bei GATED-Programmen die Länge des Gates." },
+    { "size", "Raumgröße: Abstände der Reflexionen und Dichte des Halls." },
+    { "depth", "Tiefe: mehr = entfernter, dunkler, weniger frühe Reflexionen." },
+    { "movement", "Modulation im Hall: macht ihn breiter und lebendiger, viel davon klingt nach Chorus." },
+    { "character", "Klangfarbe: links dunkel, rechts hell." },
+    { "width", "Stereobreite des Halls. 100 % = natürlich, darüber breiter." },
+    { "duck", "Hall wird leiser, solange das Signal spielt, und blüht in den Pausen auf. Hält Gitarren und Vocals klar." },
+    { "mix", "Anteil des Halls. Bei 100% WET (für Send-Spuren) zählt nur der Hall." },
+    { "lowCut", "Entfernt Bässe aus dem Hall, damit es unten nicht matscht. Ganz links = aus." },
+    { "highCut", "Entfernt Höhen aus dem Hall, damit er nicht zischt. Ganz rechts = aus." },
+};
 
 juce::Rectangle<float> catRect (int c) { return { 74.0f + (float) (c % 4) * 66.0f, c < 4 ? 222.0f : 266.0f, 60.0f, 16.0f }; }
+juce::Rectangle<float> down (juce::Rectangle<float> r) { return r.translated (0, RV1Editor::top); }
 
 constexpr float pi = juce::MathConstants<float>::pi;
 constexpr float a0 = -0.75f * pi;
@@ -49,135 +65,126 @@ Colour knobColour (int ring)
 }
 }
 
-RV1Editor::RV1Editor (RV1Processor& p) : AudioProcessorEditor (p), proc (p)
+RV1Editor::RV1Editor (RV1Processor& p) : ModernEditor (p, p.apvts, "RV-1", W0, H0), proc (p)
 {
-    setResizable (true, true);
-    setResizeLimits (500, 170, 2000, 680);
-    getConstrainer()->setFixedAspectRatio (W / H);
-    setSize ((int) W, (int) H);
     knobSprites.resize ((size_t) NK);
-    startTimerHz (30);
+    enableViewSwitch();
+    addHelp ({ { "100% WET", "Nur Hall, kein Originalsignal: für Send-/Effekt-Spuren." },
+               { "FREEZE", "Hält den Hall unendlich stehen, neues Signal kommt nicht mehr hinein." },
+               { "ALGORITHM", "Wechselt den Hall-Algorithmus (Hall, Plate, Room, Chamber, Ambience, Chorus, Gated)." } });
+    syncView();
 }
 
-int RV1Editor::hitKnob (juce::Point<float> b) const
+// ------------------------------------------------------------- Ansichten
+void RV1Editor::syncView()
+{
+    const int v = value ("view") > 0.5f ? 1 : 0;
+    if (v == builtView) return;
+    builtView = v;
+    clearControls();
+    if (v == 1) buildModern(); else buildConsole();
+}
+
+int RV1Editor::category() const
+{
+    const int fp = proc.factoryProgram();
+    return fp >= 0 ? RV1Processor::programs()[(size_t) fp].category : -1;
+}
+
+void RV1Editor::stepProgram (int dir)
+{
+    const int fp = proc.factoryProgram();
+    proc.loadProgram ((fp >= 0 ? fp : proc.currentProgram()) + dir);
+}
+
+void RV1Editor::addBrowserButtons (bool modern)
+{
+    auto add = [&] (juce::Rectangle<float> r, std::function<String()> label, std::function<bool()> on, std::function<void()> click, const String& help = {})
+    {
+        MButton b { down (r), label, on, click, modern::accent() };
+        if (! modern) b.paint = [label] (Graphics& g, juce::Rectangle<float> rr, bool o, bool) { drawButton (g, rr.getX(), rr.getY(), rr.getWidth(), rr.getHeight(), o, label()); };
+        b.help = help;
+        buttons.push_back (b);
+    };
+    for (int c = 0; c < RV1Processor::numCategories; ++c)
+        add (catRect (c), [c] { return String (RV1Processor::categoryNames[c]); }, [this, c] { return category() == c; },
+             [this, c] { proc.loadProgram (RV1Processor::firstOfCategory (c)); },
+             String::fromUTF8 ("Springt zum ersten Programm der Kategorie ") + RV1Processor::categoryNames[c] + ".");
+    add (rPrev, [modern] { return String (modern ? "<" : "PREV"); }, [] { return false; }, [this] { stepProgram (-1); }, String::fromUTF8 ("Vorheriges Programm."));
+    add (rNext, [modern] { return String (modern ? ">" : "NEXT"); }, [] { return false; }, [this] { stepProgram (1); }, String::fromUTF8 ("Nächstes Programm."));
+    add (rSend, [] { return String ("100% WET"); }, [this] { return flag ("send"); }, [this] { toggle ("send"); });
+    add (rFreeze, [] { return String ("FREEZE"); }, [this] { return flag ("freeze"); }, [this] { toggle ("freeze"); });
+    add (rAlgo, [this, modern] { return modern ? "ALGO: " + String (RV1Processor::algoNames[juce::jlimit (0, RV1Processor::numAlgos - 1, (int) value ("algo"))]) : String ("ALGORITHM"); },
+         [] { return false; }, [this] { setValue ("algo", (float) (((int) value ("algo") + 1) % RV1Processor::numAlgos)); },
+         String::fromUTF8 (help.at ("ALGORITHM").toRawUTF8()));
+}
+
+void RV1Editor::buildConsole()
 {
     for (int i = 0; i < NK; ++i)
     {
-        const float dx = b.x - knobs[i].cx, dy = b.y - knobs[i].cy, rr = knobs[i].r + 8;
-        if (dx * dx + dy * dy < rr * rr) return i;
+        MKnob k { knobDefs[i].id, knobDefs[i].label, knobDefs[i].cx, knobDefs[i].cy + top, knobDefs[i].r, modern::accent(),
+                  [this, i] (float v) { return formatValue (i, v); } };
+        k.noValue = true;
+        k.help = String::fromUTF8 (knobHelp.at (knobDefs[i].id));
+        knobs.push_back (k);
     }
-    return -1;
+    display = down (rOled);
+    plainDisplay = true;
+    addBrowserButtons (false);
+    MButton byp { down (rBypass), [] { return String ("BYPASS"); }, [this] { return flag ("bypass"); }, [this] { toggle ("bypass"); } };
+    byp.paint = [] (Graphics&, juce::Rectangle<float>, bool, bool) {};
+    buttons.push_back (byp);
 }
 
-// ------------------------------------------------------------------- Maus
-void RV1Editor::mouseMove (const juce::MouseEvent& e)
+void RV1Editor::buildModern()
 {
-    mouseBase = toBase (e.position);
-    hot = hitKnob (mouseBase);
-    repaint();
-}
-
-void RV1Editor::mouseExit (const juce::MouseEvent&)
-{
-    mouseBase = { -1000, -1000 };
-    if (drag < 0) hot = -1;
-    repaint();
-}
-
-void RV1Editor::mouseDown (const juce::MouseEvent& e)
-{
-    const auto b = toBase (e.position);
-    const int cur = proc.currentProgram();
-    for (int c = 0; c < RV1Processor::numCategories; ++c)
-        if (catRect (c).contains (b)) { proc.loadProgram (RV1Processor::firstOfCategory (c)); repaint(); return; }
-    if (rPrev.contains (b)) { proc.loadProgram (cur - 1); repaint(); return; }
-    if (rNext.contains (b) || rOled.contains (b)) { proc.loadProgram (cur + 1); repaint(); return; }
-    if (rSend.contains (b)) { toggle ("send"); return; }
-    if (rFreeze.contains (b)) { toggle ("freeze"); return; }
-    if (rAlgo.contains (b)) { proc.setParam ("algo", (float) (((int) value ("algo") + 1) % RV1Processor::numAlgos)); repaint(); return; }
-    if (rView.contains (b)) { toggle ("view"); return; }
-    if (rBypass.contains (b) || (isModern() && juce::Rectangle<float> (rBypass.getX() - 6, 287, rBypass.getWidth() + 12, 20).contains (b))) { toggle ("bypass"); return; }
-
-    hot = hitKnob (b);
-    if (hot >= 0)
+    for (int i = 0; i < NK; ++i)
     {
-        drag = hot;
-        auto* p = param (knobs[drag].id);
-        dragNorm = p->getValue();
-        lastY = b.y;
-        p->beginChangeGesture();
+        const auto& d = knobDefs[i];
+        MKnob k { d.id, d.label, d.cx, d.cy + top, d.r, knobColour (d.ring), [this, i] (float v) { return formatValue (i, v); } };
+        k.help = String::fromUTF8 (knobHelp.at (d.id));
+        knobs.push_back (k);
     }
-}
-
-void RV1Editor::mouseDrag (const juce::MouseEvent& e)
-{
-    const auto b = toBase (e.position);
-    mouseBase = b;
-    if (drag < 0) return;
-    dragNorm = juce::jlimit (0.0f, 1.0f, dragNorm + (lastY - b.y) / (e.mods.isShiftDown() ? 900.0f : 220.0f));
-    lastY = b.y;
-    param (knobs[drag].id)->setValueNotifyingHost (dragNorm);
-    repaint();
-}
-
-void RV1Editor::mouseUp (const juce::MouseEvent& e)
-{
-    if (drag >= 0) param (knobs[drag].id)->endChangeGesture();
-    drag = -1;
-    hot = hitKnob (toBase (e.position));
-    repaint();
-}
-
-void RV1Editor::mouseDoubleClick (const juce::MouseEvent& e)
-{
-    const int k = hitKnob (toBase (e.position));
-    if (k < 0) return;
-    auto* p = param (knobs[k].id);
-    p->beginChangeGesture();
-    p->setValueNotifyingHost (p->getDefaultValue());
-    p->endChangeGesture();
-    repaint();
-}
-
-void RV1Editor::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
-{
-    const auto b = toBase (e.position);
-    // Mausrad über dem Display blättert durch die Programme
-    if (rOled.contains (b))
-    {
-        proc.loadProgram (proc.currentProgram() + (w.deltaY * (w.isReversed ? -1.0f : 1.0f) > 0 ? -1 : 1));
-        repaint();
-        return;
-    }
-    const int k = hitKnob (b);
-    if (k < 0) return;
-    auto* p = param (knobs[k].id);
-    const float dir = w.isReversed ? -1.0f : 1.0f;
-    p->beginChangeGesture();
-    p->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, p->getValue() + dir * w.deltaY * (e.mods.isShiftDown() ? 0.035f : 0.17f)));
-    p->endChangeGesture();
-    repaint();
+    display = down (rOled);
+    addBrowserButtons (true);
 }
 
 // ---------------------------------------------------------------- Anzeige
-void RV1Editor::timerCallback()
+void RV1Editor::tick()
 {
     auto fall = [] (float& disp, float v) { disp = v > disp ? v : std::max (-90.0f, disp - 1.2f); };
-    fall (inDisp, a2db (proc.inPeak.exchange (0.0f)));
-    fall (wetDisp, a2db (proc.wetPeak.exchange (0.0f)));
+    fall (inDisp, dsp::a2db (proc.inPeak.exchange (0.0f)));
+    fall (wetDisp, dsp::a2db (proc.wetPeak.exchange (0.0f)));
     const float d = proc.duckDb.load();
     duckDisp = d < duckDisp ? d : std::min (0.0f, duckDisp + 0.6f);
-    repaint();
+}
+
+void RV1Editor::drawDisplay (Graphics& g, juce::Rectangle<float> r)
+{
+    drawProgram (g, r, builtView == 1);
+    if (builtView == 1) headerInfo (g, String::fromUTF8 ("Klicken: nächstes Programm  ·  Mausrad: blättern"));
+}
+
+bool RV1Editor::displayDown (juce::Point<float>, const juce::MouseEvent&)
+{
+    stepProgram (1);
+    return false;
+}
+
+void RV1Editor::displayWheel (juce::Point<float>, float d, const juce::MouseEvent&)
+{
+    stepProgram (d > 0 ? -1 : 1);
 }
 
 String RV1Editor::formatValue (int i, float v) const
 {
-    const String id = knobs[i].id;
+    const String id = knobDefs[i].id;
     if (id == "lowCut" && v <= 20.5f) return "OFF";
     if (id == "highCut" && v >= 19500.0f) return "OFF";
     if (id == "decay" && (int) value ("algo") == RV1Processor::gated)
         return "GATE " + String (juce::roundToInt (juce::jlimit (0.06f, 1.2f, v * 0.25f) * 1000)) + " ms";
-    switch (knobs[i].fmt)
+    switch (knobDefs[i].fmt)
     {
         case fMs:    return String (juce::roundToInt (v)) + " ms";
         case fSec:   return String (v, v < 10 ? 2 : 1) + " s";
@@ -191,9 +198,9 @@ String RV1Editor::formatValue (int i, float v) const
 
 String RV1Editor::formatScale (int i, float v) const
 {
-    const String id = knobs[i].id;
+    const String id = knobDefs[i].id;
     if ((id == "lowCut" && v <= 20.5f) || (id == "highCut" && v >= 19500.0f)) return "OFF";
-    switch (knobs[i].fmt)
+    switch (knobDefs[i].fmt)
     {
         case fChar: return v == 0 ? "DARK" : (v == 100 ? "BRIGHT" : "");
         case fMix:  return v == 0 ? "DRY" : (v == 100 ? "WET" : "50");
@@ -203,34 +210,42 @@ String RV1Editor::formatScale (int i, float v) const
     }
 }
 
-void RV1Editor::rebuild (float ps)
+void RV1Editor::rebuildSprites (float ps)
 {
     for (int i = 0; i < NK; ++i)
-        knobSprites[(size_t) i] = buildKnob (knobs[i].cx, knobs[i].cy, knobs[i].r, knobs[i].ring, ps, H);
-    toggleSprites[0] = buildToggle (rBypass.getCentreX(), rBypass.getCentreY(), false, ps, H);
-    toggleSprites[1] = buildToggle (rBypass.getCentreX(), rBypass.getCentreY(), true, ps, H);
+        knobSprites[(size_t) i] = buildKnob (knobDefs[i].cx, knobDefs[i].cy, knobDefs[i].r, knobDefs[i].ring, ps, 340.0f);
+    toggleSprites[0] = buildToggle (rBypass.getCentreX(), rBypass.getCentreY(), false, ps, 340.0f);
+    toggleSprites[1] = buildToggle (rBypass.getCentreX(), rBypass.getCentreY(), true, ps, 340.0f);
     builtPs = ps;
 }
 
-void RV1Editor::paint (juce::Graphics& g)
+void RV1Editor::drawBackground (Graphics& g)
 {
-    s = std::max (0.25f, std::min (getWidth() / W, getHeight() / H));
-    ox = std::floor ((getWidth() - W * s) * 0.5f);
-    oy = std::floor ((getHeight() - H * s) * 0.5f);
-    g.fillAll (isModern() ? modern::bg() : rgb (12, 12, 13));
-    g.addTransform (juce::AffineTransform::scale (s).translated (ox, oy));
-    if (isModern()) drawModern (g);
+    g.saveState();
+    g.addTransform (juce::AffineTransform::translation (0, top));
+    if (builtView == 1) drawModern (g);
     else
     {
         const float ps = std::round (g.getInternalContext().getPhysicalPixelScaleFactor() * 4.0f) / 4.0f;
-        if (std::abs (ps - builtPs) > 0.01f) rebuild (ps);
+        if (std::abs (ps - builtPs) > 0.01f) rebuildSprites (ps);
+        g.reduceClipRegion (juce::Rectangle<int> (0, 0, (int) W, 340));
         drawConsole (g);
     }
+    g.restoreState();
+}
+
+void RV1Editor::drawKnob (Graphics& g, int i)
+{
+    if (builtView == 1 || i >= NK) { ModernEditor::drawKnob (g, i); return; }
+    g.saveState();
+    g.addTransform (juce::AffineTransform::translation (0, top));
+    drawConsoleKnob (g, i);
+    g.restoreState();
 }
 
 void RV1Editor::drawScale (juce::Graphics& g, int i, float rOuter, Colour c)
 {
-    const auto& k = knobs[i];
+    const auto& k = knobDefs[i];
     auto* p = param (k.id);
     auto f = font (8);
     g.setFont (f);
@@ -249,9 +264,9 @@ void RV1Editor::drawScale (juce::Graphics& g, int i, float rOuter, Colour c)
     }
 }
 
-void RV1Editor::drawKnob (juce::Graphics& g, int i)
+void RV1Editor::drawConsoleKnob (juce::Graphics& g, int i)
 {
-    const auto& k = knobs[i];
+    const auto& k = knobDefs[i];
     const float cx = k.cx, cy = k.cy, r = k.r, rc = r * 0.58f;
     const float n = juce::jlimit (0.0f, 1.0f, param (k.id)->getValue());
     const float a = a0 + n * 1.5f * pi, sa = std::sin (a), ca = -std::cos (a);
@@ -271,47 +286,11 @@ void RV1Editor::drawKnob (juce::Graphics& g, int i)
     ctext (g, k.label, cx, cy - r - (r > 20 ? 33.0f : 28.0f), 11);
 }
 
-void RV1Editor::drawFlatKnob (juce::Graphics& g, int i)
-{
-    const auto& k = knobs[i];
-    const float cx = k.cx, cy = k.cy, r = k.r;
-    const float n = juce::jlimit (0.0f, 1.0f, param (k.id)->getValue());
-    const float a = a0 + n * 1.5f * pi;
-    const bool hv = (drag >= 0 ? drag : hot) == i;
-    const Colour c = knobColour (k.ring);
-    const float w = r > 20 ? 6.0f : 4.0f;
-    g.setColour (rgb (46, 51, 62)); arc (g, cx, cy, r - w * 0.5f, a0, -a0, w);
-    if (n > 0.002f) { g.setColour (c); arc (g, cx, cy, r - w * 0.5f, a0, a, w); }
-    const float ri = r - w - 2;
-    g.setColour (rgb (24, 27, 34)); g.fillEllipse (cx - ri, cy - ri, 2 * ri, 2 * ri);
-    g.setColour (hv ? modern::dim() : rgb (56, 62, 75)); g.drawEllipse (cx - ri, cy - ri, 2 * ri, 2 * ri, 1.0f);
-    g.setColour (c);
-    g.fillEllipse (cx + std::sin (a) * ri * 0.65f - 2.5f, cy - std::cos (a) * ri * 0.65f - 2.5f, 5, 5);
-    g.setFont (font (r > 20 ? 10.0f : 9.0f)); g.setColour (modern::dim());
-    ctext (g, k.label, cx, cy - r - 15, 10);
-    g.setFont (font (r > 20 ? 11.0f : 9.0f)); g.setColour (hv ? juce::Colours::white : modern::text().withAlpha (0.9f));
-    ctext (g, formatValue (i, param (k.id)->convertFrom0to1 (n)), cx, cy + r + 4, 11);
-}
-
-void RV1Editor::drawBtn (juce::Graphics& g, juce::Rectangle<float> r, bool on, const String& label, bool modern)
-{
-    if (! modern) { drawButton (g, r.getX(), r.getY(), r.getWidth(), r.getHeight(), on, label); return; }
-    const bool hover = r.contains (mouseBase);
-    g.setColour (on ? modern::accent() : (hover ? rgb (56, 62, 75) : rgb (40, 45, 55)));
-    g.fillRoundedRectangle (r, r.getHeight() * 0.5f);
-    g.setColour (on ? modern::bg() : modern::dim());
-    float fh = 9.0f;
-    while (fh > 6.5f && font (fh).getStringWidthFloat (label) > r.getWidth() - 6) fh -= 0.5f;
-    g.setFont (font (fh));
-    g.drawText (label, r, juce::Justification::centred, false);
-}
-
 // Programm-Display: Kategorie, Name, Algorithmus und die Hüllkurve des Halls
-void RV1Editor::drawDisplay (juce::Graphics& g, juce::Rectangle<float> r, bool modern)
+void RV1Editor::drawProgram (juce::Graphics& g, juce::Rectangle<float> r, bool modern)
 {
     const auto& progs = RV1Processor::programs();
-    const int pi_ = juce::jlimit (0, (int) progs.size() - 1, proc.currentProgram());
-    const auto& pr = progs[(size_t) pi_];
+    const int fp = proc.factoryProgram();
     const int algo = (int) value ("algo");
 
     if (! modern)
@@ -325,18 +304,19 @@ void RV1Editor::drawDisplay (juce::Graphics& g, juce::Rectangle<float> r, bool m
     const float x = r.getX() + 10, rr = r.getRight() - 10;
 
     g.setFont (font (10)); g.setColour (cHi);
-    ltext (g, RV1Processor::categoryNames[pr.category], x, r.getY() + 8, 10);
+    ltext (g, fp >= 0 ? String (RV1Processor::categoryNames[progs[(size_t) fp].category])
+                      : String (proc.presetName == "Init" ? "INIT" : "EIGENES PRESET"), x, r.getY() + 8, 10);
     g.setColour (cDim);
-    rtext (g, String (pi_ + 1).paddedLeft ('0', 2) + " / " + String ((int) progs.size()), rr, r.getY() + 8, 10);
+    if (fp >= 0) rtext (g, String (fp + 1).paddedLeft ('0', 2) + " / " + String ((int) progs.size()), rr, r.getY() + 8, 10);
     g.setFont (font (20)); g.setColour (cTx);
-    ltext (g, pr.name, x, r.getY() + 21, 20);
+    ltext (g, proc.presetName, x, r.getY() + 21, 20);
 
     g.setFont (font (10));
     const int h = drag >= 0 ? drag : hot;
-    if (h >= 0)
+    if (h >= 0 && h < NK)
     {
         g.setColour (cHi);
-        ltext (g, String (knobs[h].label) + "  " + formatValue (h, value (knobs[h].id)), x, r.getY() + 48, 10);
+        ltext (g, String (knobDefs[h].label) + "  " + formatValue (h, value (knobDefs[h].id)), x, r.getY() + 48, 10);
     }
     else
     {
@@ -426,29 +406,15 @@ void RV1Editor::drawDisplay (juce::Graphics& g, juce::Rectangle<float> r, bool m
     }
 }
 
-// ---------------------------------------------------------------- Konsole
 void RV1Editor::drawConsole (juce::Graphics& g)
 {
-    drawFaceplate (g, W, H);
+    drawFaceplate (g, W, 340.0f);
     drawSeam (g, 344, 22, 296);
     drawSeam (g, 846, 22, 296);
 
-    drawDisplay (g, rOled, false);
-    const int cat = RV1Processor::programs()[(size_t) juce::jlimit (0, (int) RV1Processor::programs().size() - 1, proc.currentProgram())].category;
-    for (int c = 0; c < RV1Processor::numCategories; ++c)
-        drawBtn (g, catRect (c), c == cat, RV1Processor::categoryNames[c], false);
-    drawBtn (g, rPrev, false, "PREV", false);
-    drawBtn (g, rNext, false, "NEXT", false);
     g.setFont (font (22)); g.setColour (silk()); ltext (g, "RV-1", 24, 290, 22);
     g.setFont (font (11)); g.setColour (silk (0.95f)); ltext (g, "ONNO", 88, 292, 11);
     g.setFont (font (8)); g.setColour (silk (0.75f)); ltext (g, "ALGORITHMIC REVERB", 88, 306, 8);
-
-    for (int i = 0; i < NK; ++i) drawKnob (g, i);
-
-    drawBtn (g, rSend, flag ("send"), "100% WET", false);
-    drawBtn (g, rFreeze, flag ("freeze"), "FREEZE", false);
-    drawBtn (g, rAlgo, false, "ALGORITHM", false);
-    drawBtn (g, rView, false, "MODERN", false);
 
     g.setFont (font (8)); g.setColour (silk (0.95f));
     ctext (g, "ON", rBypass.getCentreX(), rBypass.getY() - 12, 8);
@@ -457,33 +423,11 @@ void RV1Editor::drawConsole (juce::Graphics& g)
 }
 
 // ---------------------------------------------------------------- Modern
-void RV1Editor::drawModern (juce::Graphics& g)
+void RV1Editor::drawModern (Graphics& g)
 {
     modern::panelRect (g, 12, 12, 328, 316);
     modern::panelRect (g, 350, 12, 492, 316);
     modern::panelRect (g, 852, 12, 136, 316);
-
-    drawDisplay (g, rOled, true);
-    const int cat = RV1Processor::programs()[(size_t) juce::jlimit (0, (int) RV1Processor::programs().size() - 1, proc.currentProgram())].category;
-    for (int c = 0; c < RV1Processor::numCategories; ++c)
-        drawBtn (g, catRect (c), c == cat, RV1Processor::categoryNames[c], true);
-    drawBtn (g, rPrev, false, "<", true);
-    drawBtn (g, rNext, false, ">", true);
-    g.setFont (font (18));
-    g.setColour (modern::text()); ltext (g, "ONNO", 24, 292, 18);
-    g.setColour (modern::accent()); ltext (g, "RV-1", 24 + font (18).getStringWidthFloat ("ONNO "), 292, 18);
-
-    for (int i = 0; i < NK; ++i) drawFlatKnob (g, i);
-
-    drawBtn (g, rSend, flag ("send"), "100% WET", true);
-    drawBtn (g, rFreeze, flag ("freeze"), "FREEZE", true);
-    drawBtn (g, rAlgo, false, RV1Processor::algoNames[(int) value ("algo")], true);
-    drawBtn (g, rView, false, "KONSOLE", true);
-
-    const bool byp = flag ("bypass");
-    auto br = juce::Rectangle<float> (rBypass.getX() - 6, 287, rBypass.getWidth() + 12, 20);
-    g.setColour (byp ? modern::warm() : (br.contains (mouseBase) ? rgb (56, 62, 75) : rgb (40, 45, 55)));
-    g.fillRoundedRectangle (br, 11);
-    g.setColour (byp ? modern::bg() : modern::dim()); g.setFont (font (10));
-    g.drawText ("BYPASS", br, juce::Justification::centred, false);
+    g.setFont (font (9)); g.setColour (modern::dim());
+    ltext (g, "PROGRAMM", 24, 206, 9);
 }

@@ -110,9 +110,9 @@ static void testVC1 (const juce::File& dir)
     check ("100 Hz -6 dBFS, Thr -24, 2:1 (JSFX: -8.3)", measure<VC1Processor> (100, 0.5f, F ([] (VC1Processor& p) {
         setParam (p.apvts, "thr", -24); setParam (p.apvts, "ratio", 2); })), -8.3f, 0.1f);
 
-    render<VC1Processor, VC1Editor> (dir, "vc1-juce-konsole.png", 800, 300, [] (VC1Processor&) {}, -1);
-    render<VC1Processor, VC1Editor> (dir, "vc1-juce-konsole-hover.png", 800, 300, [] (VC1Processor&) {}, 0);
-    render<VC1Processor, VC1Editor> (dir, "vc1-juce-modern.png", 800, 300, [] (VC1Processor& p) { setParam (p.apvts, "view", 1); }, -1);
+    render<VC1Processor, VC1Editor> (dir, "vc1-juce-konsole.png", 800, 396, [] (VC1Processor&) {}, -1);
+    render<VC1Processor, VC1Editor> (dir, "vc1-juce-konsole-hover.png", 800, 396, [] (VC1Processor&) {}, 0);
+    render<VC1Processor, VC1Editor> (dir, "vc1-juce-modern.png", 800, 396, [] (VC1Processor& p) { setParam (p.apvts, "view", 1); }, -1);
 }
 
 static void testCS1 (const juce::File& dir)
@@ -208,9 +208,9 @@ static void testCS1 (const juce::File& dir)
     }
 
     auto scream = F ([] (CS1Processor& p) { p.applyPreset (7); setParam (p.apvts, "gateOn", 1); });
-    render<CS1Processor, CS1Editor> (dir, "cs1-konsole.png", 1100, 380, scream, -1);
-    render<CS1Processor, CS1Editor> (dir, "cs1-konsole-hover.png", 1100, 380, scream, 12);
-    render<CS1Processor, CS1Editor> (dir, "cs1-modern.png", 1100, 380, F ([] (CS1Processor& p) { p.applyPreset (7); setParam (p.apvts, "gateOn", 1); setParam (p.apvts, "view", 1); }), -1);
+    render<CS1Processor, CS1Editor> (dir, "cs1-konsole.png", 1100, 426, scream, -1);
+    render<CS1Processor, CS1Editor> (dir, "cs1-konsole-hover.png", 1100, 426, scream, 12);
+    render<CS1Processor, CS1Editor> (dir, "cs1-modern.png", 1100, 426, F ([] (CS1Processor& p) { p.applyPreset (7); setParam (p.apvts, "gateOn", 1); setParam (p.apvts, "view", 1); }), -1);
 }
 
 // Impulsantwort des Halls (nur Hallanteil), Länge in Sekunden
@@ -353,9 +353,9 @@ static void testRV1 (const juce::File& dir)
     }
 
     auto setup = F ([] (RV1Processor& p) { p.loadProgram (5); });
-    render<RV1Processor, RV1Editor> (dir, "rv1-konsole.png", 1000, 340, setup, -1);
-    render<RV1Processor, RV1Editor> (dir, "rv1-konsole-hover.png", 1000, 340, setup, 1);
-    render<RV1Processor, RV1Editor> (dir, "rv1-modern.png", 1000, 340, F ([] (RV1Processor& p) { p.loadProgram (28); setParam (p.apvts, "view", 1); }), -1);
+    render<RV1Processor, RV1Editor> (dir, "rv1-konsole.png", 1000, 386, setup, -1);
+    render<RV1Processor, RV1Editor> (dir, "rv1-konsole-hover.png", 1000, 386, setup, 1);
+    render<RV1Processor, RV1Editor> (dir, "rv1-modern.png", 1000, 386, F ([] (RV1Processor& p) { p.loadProgram (28); setParam (p.apvts, "view", 1); }), -1);
 }
 
 static void testEQ (const juce::File& dir)
@@ -668,6 +668,54 @@ static void testTame (const juce::File& dir)
 }
 
 // Gemeinsames Bedien-Gerüst: Rückgängig, A/B, Presets, Lautheitsausgleich, Werte eintippen
+// VC-1, CS-1, RV-1 im gemeinsamen Gerüst: Ansicht bleibt bei Rückgängig/Presets, alte Zustände laden
+static void testSuiteAlign (const juce::File&)
+{
+    std::printf ("--- VC-1/CS-1/RV-1 in der Suite ---\n");
+    auto checkBool = [] (const char* what, bool ok) { if (! ok) ++failures; std::printf ("%s %s\n", ok ? "OK  " : "FEHL", what); };
+    {
+        VC1Processor p;
+        setParam (p.apvts, "view", 1);
+        p.pushUndo();
+        setParam (p.apvts, "thr", -30);
+        p.undo();
+        checkBool ("VC-1: Rückgängig setzt Threshold zurück", std::abs (p.v ("thr") + 18.0f) < 0.01f);
+        checkBool ("VC-1: Ansicht bleibt bei Rückgängig", p.v ("view") > 0.5f);
+        p.loadPreset (1);
+        checkBool ("VC-1: Werkspreset geladen, Ansicht bleibt", p.presetName == "Drum Bus Glue" && p.v ("view") > 0.5f);
+        // Ansicht im laufenden Editor umschalten
+        std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
+        auto* e = dynamic_cast<VC1Editor*> (ed.get());
+        setParam (p.apvts, "view", 0); e->tickMeters();
+        setParam (p.apvts, "view", 1); e->tickMeters();
+        checkBool ("VC-1: Ansicht im Editor umschaltbar", true);
+    }
+    {
+        // Zustand von vor der Suite: eigener A/B-Speicher, Preset in Großbuchstaben
+        CS1Processor p;
+        setParam (p.apvts, "hpf", 120);
+        auto st = p.apvts.copyState();
+        st.setProperty ("preset", "SCREAM", nullptr);
+        st.setProperty ("slot", 1, nullptr);
+        juce::ValueTree ab ("AB"); ab.appendChild (p.apvts.copyState().setProperty ("slotIndex", 0, nullptr), nullptr);
+        st.appendChild (ab, nullptr);
+        juce::MemoryBlock mb; p.copyXmlToBinary (*st.createXml(), mb);
+        CS1Processor q; q.setStateInformation (mb.getData(), (int) mb.getSize());
+        checkBool ("CS-1: alter Zustand lädt Preset-Namen", q.presetName == "Scream");
+        checkBool ("CS-1: alter Zustand lädt Werte", std::abs (q.v ("hpf") - 120.0f) < 0.5f);
+        checkBool ("CS-1: Quell-Presets sind Werkspresets", q.numFactoryPresets() == CS1Processor::numPresets);
+    }
+    {
+        RV1Processor p;
+        p.loadProgram (28);
+        auto st = p.apvts.copyState();       // ohne onnoPreset wie vor der Suite
+        juce::MemoryBlock mb; p.copyXmlToBinary (*st.createXml(), mb);
+        RV1Processor q; q.setStateInformation (mb.getData(), (int) mb.getSize());
+        checkBool ("RV-1: alter Zustand zeigt Programmnamen", q.presetName == "Arena 84" && q.factoryProgram() == 28);
+        checkBool ("RV-1: 32 Programme als Werkspresets", q.numFactoryPresets() == (int) RV1Processor::programs().size());
+    }
+}
+
 static void testFramework (const juce::File& dir)
 {
     std::puts ("--- Bedien-Geruest ---");
@@ -914,6 +962,7 @@ int main (int argc, char** argv)
     if (want ("Analog")) testAnalog();
     if (want ("Tame")) testTame (dir);
     if (want ("Framework")) testFramework (dir);
+    if (want ("Suite")) testSuiteAlign (dir);
     if (want ("Audit")) testAudit();
     std::printf ("\n%s (%d Fehler)\n", failures == 0 ? "ALLE TESTS OK" : "TESTS FEHLGESCHLAGEN", failures);
     return failures == 0 ? 0 : 1;

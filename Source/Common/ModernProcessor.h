@@ -180,6 +180,7 @@ public:
     {
         juce::String name;
         std::vector<std::pair<juce::String, float>> values;
+        juce::String category;      // optional: Untermenü im Preset-Menü
     };
     using Snapshot = juce::NamedValueSet;
 
@@ -269,6 +270,7 @@ public:
                     if (t.isValid()) { slots[i] = treeToSnapshot (t); st.removeChild (t, nullptr); }
                 }
                 for (auto id : { "onnoMatch", "onnoSlot", "onnoPreset" }) st.removeProperty (id, nullptr);
+                migrateState (st);
                 apvts.replaceState (st);
             }
     }
@@ -291,13 +293,18 @@ public:
     }
 
     // ------------------------------------------------------------ Bedien-Gerüst (nur GUI-Thread)
-    // Momentaufnahme aller Parameter außer Bypass (normierte Werte)
+    // Parameter der Bedienung (Bypass, Ansicht): nicht in Rückgängig, A/B und Presets
+    virtual bool isUiParam (const juce::String& id) const { return id == "bypass" || id == "view"; }
+    // bleiben beim Laden eines Werkspresets stehen (z. B. Pegel, Mix)
+    virtual bool keepOnPreset (const juce::String&) const { return false; }
+
+    // Momentaufnahme aller Klang-Parameter (normierte Werte)
     Snapshot capture() const
     {
         Snapshot s;
         for (auto* p : getParameters())
             if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
-                if (rp->getParameterID() != "bypass")
+                if (! isUiParam (rp->getParameterID()))
                     s.set (rp->getParameterID(), rp->getValue());
         return s;
     }
@@ -395,11 +402,16 @@ public:
         if (! juce::isPositiveAndBelow (index, names.size())) return;
         pushUndo();
         Snapshot s;
+        const auto fac = factoryPresets();
+        const bool factory = index >= 1 && index <= (int) fac.size();
         for (auto* p : getParameters())
             if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
-                if (rp->getParameterID() != "bypass") s.set (rp->getParameterID(), rp->getDefaultValue());
-        const auto fac = factoryPresets();
-        if (index >= 1 && index <= (int) fac.size())
+            {
+                const auto id = rp->getParameterID();
+                if (isUiParam (id)) continue;
+                s.set (id, factory && keepOnPreset (id) ? rp->getValue() : rp->getDefaultValue());
+            }
+        if (factory)
         {
             for (auto& [id, val] : fac[(size_t) index - 1].values)
                 if (auto* p = apvts.getParameter (id)) s.set (id, p->convertTo0to1 (val));
@@ -409,7 +421,8 @@ public:
             if (auto xml = juce::XmlDocument::parse (userPresets()[index - 1 - (int) fac.size()]))
                 for (auto* e : xml->getChildWithTagNameIterator ("P"))
                     if (auto* p = apvts.getParameter (e->getStringAttribute ("id")))
-                        s.set (p->getParameterID(), p->convertTo0to1 ((float) e->getDoubleAttribute ("v")));
+                        if (! isUiParam (p->getParameterID()))
+                            s.set (p->getParameterID(), p->convertTo0to1 ((float) e->getDoubleAttribute ("v")));
         }
         restore (s);
         presetName = names[index];
@@ -430,7 +443,7 @@ public:
         xml.setAttribute ("plugin", pluginName);
         for (auto* p : getParameters())
             if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
-                if (rp->getParameterID() != "bypass")
+                if (! isUiParam (rp->getParameterID()))
                 {
                     auto* e = xml.createNewChildElement ("P");
                     e->setAttribute ("id", rp->getParameterID());
@@ -452,8 +465,13 @@ public:
     LoudnessMatch match;
     juce::String presetName { "Init" };
 
+    // Name des Presets aus der Preset-Liste übernehmen (z. B. nach Laden eines alten Zustands)
+    void setPresetName (const juce::String& n) { presetName = n; }
+
 protected:
     virtual void prepare (double sampleRate, int blockSize) = 0;
+    // ältere Zustände anpassen, bevor sie geladen werden
+    virtual void migrateState (juce::ValueTree&) {}
     virtual void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) = 0;
 
 private:

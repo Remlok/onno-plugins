@@ -3,14 +3,6 @@
 
 const char* const VC1Processor::knobIds[numKnobs] = { "thr", "ratio", "attack", "release", "knee", "output", "blend" };
 
-static juce::NormalisableRange<float> logRange (float lo, float hi)
-{
-    return { lo, hi,
-             [] (float a, float b, float n) { return a * std::exp (n * std::log (b / a)); },
-             [] (float a, float b, float v) { return std::log (v / a) / std::log (b / a); },
-             [] (float, float, float v) { return v; } };
-}
-
 juce::AudioProcessorValueTreeState::ParameterLayout VC1Processor::createLayout()
 {
     using P = juce::AudioParameterFloat;
@@ -19,37 +11,30 @@ juce::AudioProcessorValueTreeState::ParameterLayout VC1Processor::createLayout()
     auto ms = A().withLabel ("ms");
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> p;
     p.push_back (std::make_unique<P> (juce::ParameterID { "thr", 1 }, "Threshold", juce::NormalisableRange<float> (-60.0f, 0.0f), -18.0f, db));
-    p.push_back (std::make_unique<P> (juce::ParameterID { "ratio", 1 }, "Ratio", logRange (1.0f, 20.0f), 4.0f, A().withLabel (":1")));
-    p.push_back (std::make_unique<P> (juce::ParameterID { "attack", 1 }, "Attack", logRange (0.1f, 100.0f), 10.0f, ms));
-    p.push_back (std::make_unique<P> (juce::ParameterID { "release", 1 }, "Release", logRange (10.0f, 1000.0f), 120.0f, ms));
+    p.push_back (std::make_unique<P> (juce::ParameterID { "ratio", 1 }, "Ratio", onno::logRange (1.0f, 20.0f), 4.0f, A().withLabel (":1")));
+    p.push_back (std::make_unique<P> (juce::ParameterID { "attack", 1 }, "Attack", onno::logRange (0.1f, 100.0f), 10.0f, ms));
+    p.push_back (std::make_unique<P> (juce::ParameterID { "release", 1 }, "Release", onno::logRange (10.0f, 1000.0f), 120.0f, ms));
     p.push_back (std::make_unique<P> (juce::ParameterID { "knee", 1 }, "Knee", juce::NormalisableRange<float> (0.0f, 24.0f), 6.0f, db));
     p.push_back (std::make_unique<P> (juce::ParameterID { "output", 1 }, "Output Gain", juce::NormalisableRange<float> (-12.0f, 24.0f), 0.0f, db));
     p.push_back (std::make_unique<P> (juce::ParameterID { "blend", 1 }, "Blend", juce::NormalisableRange<float> (0.0f, 100.0f), 100.0f, A().withLabel ("%")));
     p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "meter", 1 }, "Meter", juce::StringArray { "Input", "Output", "G.C." }, 2));
+    onno::Analog::addParams (p);
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "bypass", 1 }, "Bypass", false));
     p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "view", 1 }, "Ansicht", juce::StringArray { "Konsole", "Modern" }, 0,
                                                                juce::AudioParameterChoiceAttributes().withAutomatable (false)));
     return { p.begin(), p.end() };
 }
 
-VC1Processor::VC1Processor()
-    : AudioProcessor (BusesProperties().withInput ("Input", juce::AudioChannelSet::stereo(), true)
-                                       .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "VC1", createLayout())
+VC1Processor::VC1Processor() : ModernProcessor ("Onno VC-1", "VC1", stereoBuses(), createLayout())
 {
+    analog.attach (*this);
 }
 
-bool VC1Processor::isBusesLayoutSupported (const BusesLayout& l) const
-{
-    auto out = l.getMainOutputChannelSet();
-    return (out == juce::AudioChannelSet::mono() || out == juce::AudioChannelSet::stereo())
-        && l.getMainInputChannelSet() == out;
-}
-
-void VC1Processor::prepareToPlay (double sampleRate, int)
+void VC1Processor::prepare (double sampleRate, int)
 {
     sr = sampleRate;
     env = 0.0f;
+    analog.prepare (sr);
 }
 
 float VC1Processor::gainComputer (float x, float thr, float ratio, float knee)
@@ -61,19 +46,7 @@ float VC1Processor::gainComputer (float x, float thr, float ratio, float knee)
     return thr + d / ratio;
 }
 
-static void atomicMax (std::atomic<float>& a, float v)
-{
-    float cur = a.load();
-    while (v > cur && ! a.compare_exchange_weak (cur, v)) {}
-}
-
-static void atomicMin (std::atomic<float>& a, float v)
-{
-    float cur = a.load();
-    while (v < cur && ! a.compare_exchange_weak (cur, v)) {}
-}
-
-void VC1Processor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
+void VC1Processor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
     auto val = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
@@ -86,7 +59,9 @@ void VC1Processor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer
     const float mix = val ("blend") * 0.01f;
     const bool bypass = val ("bypass") > 0.5f;
 
-    const int nch = buf.getNumChannels(), n = buf.getNumSamples();
+    const int nch = std::min (2, getMainBusNumInputChannels()), n = buf.getNumSamples();
+    if (nch == 0) return;
+    analog.beginBlock();
     float inPk = 0, outPk = 0, grPk = 0;
     auto* L = buf.getWritePointer (0);
     auto* R = buf.getWritePointer (nch > 1 ? 1 : 0);
@@ -104,30 +79,38 @@ void VC1Processor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer
             wet = mix * g + 1 - mix;
             grPk = std::min (grPk, env);
         }
-        L[i] *= wet;
-        if (nch > 1) R[i] *= wet;
+        float ol = L[i] * wet, orr = R[i] * wet;
+        if (! bypass && analog.active())
+        {
+            // Färbung nach Kompression und Blend
+            analog.advance();
+            ol = analog.tick (ol, 0); orr = analog.tick (orr, 1);
+        }
+        L[i] = ol;
+        if (nch > 1) R[i] = orr;
         inPk = std::max (inPk, lvl);
         outPk = std::max (outPk, std::max (std::abs (L[i]), std::abs (R[i])));
     }
-    atomicMax (inPeak, inPk);
-    atomicMax (outPeak, outPk);
-    atomicMin (grPeak, grPk);
+    onno::atomicMax (inPeak, inPk);
+    onno::atomicMax (outPeak, outPk);
+    onno::atomicMin (grPeak, grPk);
+}
+
+// Startpunkte für Metal-Produktionen (Analog: 0 Clean, 1 Brit, 2 Console, 3 Tube, 4 FET)
+std::vector<onno::ModernProcessor::FactoryPreset> VC1Processor::factoryPresets() const
+{
+    return {
+        { "Drum Bus Glue", { { "thr", -20 }, { "ratio", 4 }, { "attack", 10 }, { "release", 100 }, { "knee", 6 }, { "blend", 60 }, { "output", 2 }, { "analog", 1 }, { "drive", 30 } } },
+        { "Kick Punch", { { "thr", -18 }, { "ratio", 4 }, { "attack", 30 }, { "release", 80 }, { "knee", 3 }, { "output", 2 } } },
+        { "Snare Smack", { { "thr", -22 }, { "ratio", 6 }, { "attack", 3 }, { "release", 60 }, { "blend", 70 }, { "output", 2 }, { "analog", 4 }, { "drive", 25 } } },
+        { "Room Crush", { { "thr", -40 }, { "ratio", 20 }, { "attack", 0.3f }, { "release", 50 }, { "knee", 0 }, { "blend", 30 }, { "output", 6 }, { "analog", 4 }, { "drive", 50 } } },
+        { "Bass Steady", { { "thr", -24 }, { "ratio", 6 }, { "attack", 5 }, { "release", 120 }, { "output", 4 }, { "analog", 3 }, { "drive", 30 } } },
+        { "Vocal Ride", { { "thr", -20 }, { "ratio", 3 }, { "attack", 5 }, { "release", 150 }, { "knee", 12 }, { "output", 3 } } },
+        { "Mix Bus 2:1", { { "thr", -12 }, { "ratio", 2 }, { "attack", 30 }, { "release", 300 }, { "knee", 12 }, { "output", 1 }, { "analog", 2 }, { "drive", 20 } } },
+    };
 }
 
 juce::AudioProcessorEditor* VC1Processor::createEditor() { return new VC1Editor (*this); }
-
-void VC1Processor::getStateInformation (juce::MemoryBlock& dest)
-{
-    if (auto xml = apvts.copyState().createXml())
-        copyXmlToBinary (*xml, dest);
-}
-
-void VC1Processor::setStateInformation (const void* data, int size)
-{
-    if (auto xml = getXmlFromBinary (data, size))
-        if (xml->hasTagName (apvts.state.getType()))
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
-}
 
 #ifndef ONNO_TEST_BUILD
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new VC1Processor(); }

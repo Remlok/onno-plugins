@@ -38,151 +38,88 @@ float a2db (float x) { return 8.685889638f * std::log (std::max (x, 1.0e-9f)); }
 float db2a (float x) { return std::exp (x * 0.11512925f); }
 float vuPos (float d) { return (db2a (d) - 0.1f) / (db2a (3) - 0.1f); }
 
-bool inRect (juce::Point<float> p, float x, float y, float w, float h)
-{
-    return p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h;
-}
-}
-
-VC1Editor::VC1Editor (VC1Processor& p) : AudioProcessorEditor (p), proc (p)
-{
-    setResizable (true, true);
-    setResizeLimits (400, 150, 1600, 600);
-    getConstrainer()->setFixedAspectRatio (800.0 / 300.0);
-    setSize (800, 300);
-    startTimerHz (30);
+// moderne Ansicht
+const juce::Rectangle<float> rDisplay { 16, 50, 768, 194 }, rCurve { 28, 62, 170, 170 }, rHist { 214, 62, 494, 170 };
+float histY (float db) { return rHist.getY() + rHist.getHeight() * juce::jlimit (0.0f, 1.0f, -db / 60.0f); }
 }
 
-juce::RangedAudioParameter* VC1Editor::param (const char* id) const { return proc.apvts.getParameter (id); }
-juce::RangedAudioParameter* VC1Editor::knobParam (int i) const { return param (VC1Processor::knobIds[i]); }
-float VC1Editor::paramValue (const char* id) const { return proc.apvts.getRawParameterValue (id)->load(); }
-float VC1Editor::knobValue (int i) const { return paramValue (VC1Processor::knobIds[i]); }
-
-void VC1Editor::setChoice (const char* id, int index)
+VC1Editor::VC1Editor (VC1Processor& p) : ModernEditor (p, p.apvts, "VC-1", W0, H0), proc (p)
 {
-    auto* p = param (id);
-    p->beginChangeGesture();
-    p->setValueNotifyingHost (p->convertTo0to1 ((float) index));
-    p->endChangeGesture();
-    repaint();
+    enableViewSwitch();
+    addHelp ({ { "OUTPUT GAIN", "Make-up: hebt den Pegel nach der Kompression wieder an. Mit MATCH automatisch fair." },
+               { "BLEND", "Parallel-Kompression: mischt das unbearbeitete Signal dazu. 100 % = nur komprimiert." },
+               { "KNEE", "Weicher Übergang am Threshold. Höher = unauffälligerer, VCA-typisch runder Einsatz." } });
+    syncView();
 }
 
-juce::Point<float> VC1Editor::toBase (juce::Point<float> p) const
+// ------------------------------------------------------------- Ansichten
+void VC1Editor::syncView()
 {
-    return { (p.x - ox) / s, (p.y - oy) / s };
+    const int v = value ("view") > 0.5f ? 1 : 0;
+    if (v == builtView) return;
+    builtView = v;
+    clearControls();
+    if (v == 1) buildModern(); else buildConsole();
+    addAnalogStrip();
 }
 
-int VC1Editor::hitKnob (juce::Point<float> b) const
+void VC1Editor::buildConsole()
 {
-    const bool modern = isModern();
     for (int i = 0; i < NK; ++i)
     {
-        const auto& k = layout[i];
-        const float dx = b.x - (modern ? k.mx : k.cx), dy = b.y - (modern ? k.my : k.cy);
-        const float rr = modern ? 30.0f : k.r + 8.0f;
-        if (dx * dx + dy * dy < rr * rr) return i;
+        MKnob k { VC1Processor::knobIds[i], labels[i], layout[i].cx, layout[i].cy + top, layout[i].r, modern::accent(),
+                  [this, i] (float v) { return formatValue (i, v); } };
+        k.noValue = true;
+        knobs.push_back (k);
     }
-    return -1;
-}
-
-// ------------------------------------------------------------------- Maus
-void VC1Editor::mouseMove (const juce::MouseEvent& e)
-{
-    mouseBase = toBase (e.position);
-    const int h = hitKnob (mouseBase);
-    if (h != hot) { hot = h; repaint(); }
-}
-
-void VC1Editor::mouseExit (const juce::MouseEvent&)
-{
-    mouseBase = { -1000, -1000 };
-    if (drag < 0) { hot = -1; repaint(); }
-}
-
-void VC1Editor::mouseDown (const juce::MouseEvent& e)
-{
-    const auto b = toBase (e.position);
-    if (! isModern())
+    static const char* const ml[] = { "INPUT", "OUTPUT", "G.C." };
+    static const char* const mh[] = { "Das VU zeigt den Eingangspegel (0 VU = -18 dBFS).",
+                                      "Das VU zeigt den Ausgangspegel (0 VU = -18 dBFS).",
+                                      "Das VU zeigt die Gain Reduction des Kompressors." };
+    for (int m = 0; m < 3; ++m)
     {
-        if (inRect (b, 354, 206, 30, 18)) setChoice ("meter", 0);
-        if (inRect (b, 392, 206, 30, 18)) setChoice ("meter", 1);
-        if (inRect (b, 430, 206, 30, 18)) setChoice ("meter", 2);
-        if (inRect (b, 724, 192, 36, 56)) setChoice ("bypass", paramValue ("bypass") > 0.5f ? 0 : 1);
-        if (inRect (b, 380, 262, 54, 14)) { setChoice ("view", 1); return; }
+        MButton b { { 354.0f + 38.0f * m, 206 + top, 30, 18 }, [m] { return String (ml[m]); },
+                    [this, m] { return (int) value ("meter") == m; }, [this, m] { setValue ("meter", (float) m); } };
+        b.help = String::fromUTF8 (mh[m]);
+        b.paint = [m] (Graphics& g, juce::Rectangle<float> r, bool on, bool) { drawButton (g, r.getX(), r.getY(), r.getWidth(), r.getHeight(), on, ml[m]); };
+        buttons.push_back (b);
     }
-    else
+    // Kippschalter: das Bild zeichnet die Konsole, hier nur die Fläche
+    MButton byp { { 724, 192 + top, 36, 56 }, [] { return String ("BYPASS"); }, [this] { return flag ("bypass"); }, [this] { toggle ("bypass"); } };
+    byp.paint = [] (Graphics&, juce::Rectangle<float>, bool, bool) {};
+    buttons.push_back (byp);
+}
+
+void VC1Editor::buildModern()
+{
+    display = rDisplay;
+    struct K { int i; Colour c; bool bip; };
+    const K ks[] = { { 0, mc::red(), false }, { 1, mc::red(), false }, { 2, mc::amber(), false }, { 3, mc::amber(), false },
+                     { 4, modern::accent(), false }, { 5, modern::accent(), false }, { 6, mc::green(), false } };
+    float x = 88;
+    for (auto& k : ks)
     {
-        if (inRect (b, 616, 13, 76, 20)) setChoice ("bypass", paramValue ("bypass") > 0.5f ? 0 : 1);
-        if (inRect (b, 700, 13, 84, 20)) { setChoice ("view", 0); return; }
+        knobs.push_back ({ VC1Processor::knobIds[k.i], labels[k.i], x, 298, 22, k.c,
+                           [this, i = k.i] (float v) { return formatValue (i, v); }, k.bip });
+        x += 104;
     }
-    hot = hitKnob (b);
-    if (hot >= 0)
-    {
-        drag = hot;
-        dragNorm = knobParam (drag)->getValue();
-        lastY = b.y;
-        knobParam (drag)->beginChangeGesture();
-    }
-}
-
-void VC1Editor::mouseDrag (const juce::MouseEvent& e)
-{
-    const auto b = toBase (e.position);
-    mouseBase = b;
-    if (drag < 0) return;
-    dragNorm = juce::jlimit (0.0f, 1.0f, dragNorm + (lastY - b.y) / (e.mods.isShiftDown() ? 900.0f : 220.0f));
-    lastY = b.y;
-    knobParam (drag)->setValueNotifyingHost (dragNorm);
-    repaint();
-}
-
-void VC1Editor::mouseUp (const juce::MouseEvent& e)
-{
-    if (drag >= 0) knobParam (drag)->endChangeGesture();
-    drag = -1;
-    hot = hitKnob (toBase (e.position));
-    repaint();
-}
-
-void VC1Editor::mouseDoubleClick (const juce::MouseEvent& e)
-{
-    const int k = hitKnob (toBase (e.position));
-    if (k < 0) return;
-    auto* p = knobParam (k);
-    p->beginChangeGesture();
-    p->setValueNotifyingHost (p->getDefaultValue());
-    p->endChangeGesture();
-    repaint();
-}
-
-void VC1Editor::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
-{
-    const int k = hitKnob (toBase (e.position));
-    if (k < 0) return;
-    auto* p = knobParam (k);
-    const float dir = w.isReversed ? -1.0f : 1.0f;
-    const float n = juce::jlimit (0.0f, 1.0f, p->getValue() + dir * w.deltaY * (e.mods.isShiftDown() ? 0.035f : 0.17f));
-    p->beginChangeGesture();
-    p->setValueNotifyingHost (n);
-    p->endChangeGesture();
-    repaint();
 }
 
 // ---------------------------------------------------------------- Anzeige
-void VC1Editor::timerCallback()
+void VC1Editor::tick()
 {
-    float v = a2db (proc.inPeak.exchange (0.0f));
-    inDisp = v > inDisp ? v : std::max (-90.0f, inDisp - 1.2f);
-    v = a2db (proc.outPeak.exchange (0.0f));
-    outDisp = v > outDisp ? v : std::max (-90.0f, outDisp - 1.2f);
-    v = proc.grPeak.exchange (0.0f);
-    grDisp = v < grDisp ? v : std::min (0.0f, grDisp + 0.6f);
+    const float in = dsp::a2db (proc.inPeak.exchange (0.0f));
+    const float out = dsp::a2db (proc.outPeak.exchange (0.0f));
+    const float gr = proc.grPeak.exchange (0.0f);
+    inH.push (in); outH.push (out); grH.push (gr);
+    inDisp = in > inDisp ? in : std::max (-90.0f, inDisp - 1.2f);
+    outDisp = out > outDisp ? out : std::max (-90.0f, outDisp - 1.2f);
+    grDisp = gr < grDisp ? gr : std::min (0.0f, grDisp + 0.6f);
 
     // VU-Zeiger mit Trägheit
-    const int meter = (int) paramValue ("meter");
+    const int meter = (int) value ("meter");
     const float vt = meter == 2 ? grDisp : (meter == 1 ? outDisp + 18 : inDisp + 18);
     needle += (juce::jlimit (-0.03f, 1.06f, vuPos (vt)) - needle) * 0.22f;
-    repaint();
 }
 
 String VC1Editor::formatValue (int i, float v) const
@@ -207,7 +144,7 @@ String VC1Editor::formatScale (int i, float v) const
     return String (v, 1);
 }
 
-void VC1Editor::rebuild (float ps)
+void VC1Editor::rebuildSprites (float ps)
 {
     for (int i = 0; i < NK; ++i)
         knobSprites[(size_t) i] = buildKnob (layout[i].cx, layout[i].cy, layout[i].r, layout[i].ring, ps);
@@ -216,29 +153,37 @@ void VC1Editor::rebuild (float ps)
     builtPs = ps;
 }
 
-void VC1Editor::paint (juce::Graphics& g)
+void VC1Editor::drawBackground (Graphics& g)
 {
-    s = std::max (0.25f, std::min (getWidth() / 800.0f, getHeight() / 300.0f));
-    ox = std::floor ((getWidth() - 800 * s) * 0.5f);
-    oy = std::floor ((getHeight() - 300 * s) * 0.5f);
-    g.fillAll (isModern() ? modern::bg() : rgb (12, 12, 13));
-    g.addTransform (juce::AffineTransform::scale (s).translated (ox, oy));
-
-    if (isModern()) drawModern (g);
-    else
+    if (builtView == 1)
     {
-        // 3D-Teile in der tatsächlichen Bildschirmauflösung neu berechnen, wenn sie sich ändert
-        const float ps = std::round (g.getInternalContext().getPhysicalPixelScaleFactor() * 4.0f) / 4.0f;
-        if (std::abs (ps - builtPs) > 0.01f) rebuild (ps);
-        drawConsole (g);
+        section (g, { 16, 254, 768, 88 });
+        return;
     }
+    // 3D-Teile in der tatsächlichen Bildschirmauflösung neu berechnen, wenn sie sich ändert
+    const float ps = std::round (g.getInternalContext().getPhysicalPixelScaleFactor() * 4.0f) / 4.0f;
+    if (std::abs (ps - builtPs) > 0.01f) rebuildSprites (ps);
+    g.saveState();
+    g.reduceClipRegion (juce::Rectangle<int> (0, (int) top, (int) W, 300));
+    g.addTransform (juce::AffineTransform::translation (0, top));
+    drawConsole (g);
+    g.restoreState();
 }
 
-void VC1Editor::drawKnob (juce::Graphics& g, int i)
+void VC1Editor::drawKnob (Graphics& g, int i)
+{
+    if (builtView == 1 || i >= NK) { ModernEditor::drawKnob (g, i); return; }
+    g.saveState();
+    g.addTransform (juce::AffineTransform::translation (0, top));
+    drawConsoleKnob (g, i);
+    g.restoreState();
+}
+
+void VC1Editor::drawConsoleKnob (juce::Graphics& g, int i)
 {
     const auto& k = layout[i];
     const float cx = k.cx, cy = k.cy, r = k.r, rc = r * 0.58f;
-    const float n = juce::jlimit (0.0f, 1.0f, knobParam (i)->getValue());
+    const float n = juce::jlimit (0.0f, 1.0f, param (VC1Processor::knobIds[i])->getValue());
     const float a = a0 + n * 1.5f * pi, sa = std::sin (a), ca = -std::cos (a);
 
     knobSprites[(size_t) i].draw (g);
@@ -256,7 +201,7 @@ void VC1Editor::drawKnob (juce::Graphics& g, int i)
     // Skala mit Zahlen
     auto f = font (8);
     g.setFont (f);
-    auto* p = knobParam (i);
+    auto* p = param (VC1Processor::knobIds[i]);
     for (float sv : scales[i])
     {
         const float ta = a0 + juce::jlimit (0.0f, 1.0f, p->convertTo0to1 (sv)) * 1.5f * pi;
@@ -275,20 +220,15 @@ void VC1Editor::drawKnob (juce::Graphics& g, int i)
 
 void VC1Editor::drawConsole (juce::Graphics& g)
 {
-    const int meter = (int) paramValue ("meter");
-    const bool bypass = paramValue ("bypass") > 0.5f;
+    const int meter = (int) value ("meter");
+    const bool bypass = flag ("bypass");
     const float thr = knobValue (0), ratio = knobValue (1), knee = knobValue (4), out = knobValue (5);
 
     drawFaceplate (g);
     drawSeam (g, 472);
     drawSeam (g, 696);
 
-    for (int i = 0; i < NK; ++i) drawKnob (g, i);
-
-    // Meter-Wahl mit Klammer
-    drawButton (g, 354, 206, 30, 18, meter == 0, "INPUT");
-    drawButton (g, 392, 206, 30, 18, meter == 1, "OUTPUT");
-    drawButton (g, 430, 206, 30, 18, meter == 2, "G.C.");
+    // Klammer der Meter-Wahl (die Tasten selbst sind Buttons der Basis)
     g.setColour (silk (0.8f));
     g.fillRect (354.0f, 236.0f, 26.0f, 1.0f); g.fillRect (434.0f, 236.0f, 26.0f, 1.0f);
     g.fillRect (354.0f, 231.0f, 1.0f, 6.0f); g.fillRect (459.0f, 231.0f, 1.0f, 6.0f);
@@ -345,7 +285,7 @@ void VC1Editor::drawConsole (juce::Graphics& g)
     g.setColour (rgb (44, 46, 50)); g.drawRect (dxo, dyo, dwo, dho, 1.0f);
     g.setFont (font (12));
     const int h = drag >= 0 ? drag : hot;
-    if (h >= 0)
+    if (h >= 0 && h < NK)
     {
         g.setColour (rgb (120, 200, 255)); ltext (g, labels[h], dxo + 10, dyo + 9, 12);
         g.setColour (rgb (226, 240, 255)); rtext (g, formatValue (h, knobValue (h)), dxo + dwo - 10, dyo + 9, 12);
@@ -400,109 +340,117 @@ void VC1Editor::drawConsole (juce::Graphics& g)
     g.setFont (font (8)); g.setColour (silk (0.95f));
     ctext (g, "COMP", 742, 186, 8); ctext (g, "BYPASS", 742, 246, 8);
     toggleSprites[bypass ? 1 : 0].draw (g);
-
-    drawButton (g, 380, 262, 54, 14, false, "MODERN");
 }
 
 // --------------------------------------------------------- moderne Ansicht
-void VC1Editor::drawModernKnob (juce::Graphics& g, int i)
+void VC1Editor::drawDisplay (Graphics& g, juce::Rectangle<float>)
 {
-    const float cx = layout[i].mx, cy = layout[i].my, r = 24;
-    const float n = juce::jlimit (0.0f, 1.0f, knobParam (i)->getValue());
-    const float a = a0 + n * 1.5f * pi;
-    const bool hv = (drag >= 0 ? drag : hot) == i;
-    g.setColour (rgb (46, 51, 62)); arc (g, cx, cy, r - 4, a0, -a0, 8);
-    if (n > 0.002f) { g.setColour (modern::accent()); arc (g, cx, cy, r - 4, a0, a, 8); }
-    g.setColour (rgb (24, 27, 34)); g.fillEllipse (cx - (r - 7), cy - (r - 7), 2 * (r - 7), 2 * (r - 7));
-    g.setColour (hv ? modern::dim().withAlpha (0.8f) : rgb (56, 62, 75));
-    g.drawEllipse (cx - (r - 7), cy - (r - 7), 2 * (r - 7), 2 * (r - 7), 1.0f);
-    g.setColour (modern::accent());
-    g.fillEllipse (cx + std::sin (a) * (r - 12) - 2.5f, cy - std::cos (a) * (r - 12) - 2.5f, 5, 5);
-    g.setFont (font (10)); g.setColour (modern::dim()); ctext (g, labels[i], cx, cy - 46, 10);
-    g.setFont (font (13)); g.setColour (hv ? juce::Colours::white : modern::text().withAlpha (0.9f));
-    ctext (g, formatValue (i, knobValue (i)), cx, cy + 30, 13);
-}
-
-void VC1Editor::drawMeterBar (juce::Graphics& g, float x, const String& label, float db, bool isGr)
-{
-    const float top = 62, h = 180, bw = 16;
-    g.setColour (rgb (15, 17, 21)); g.fillRect (x, top, bw, h);
-    if (isGr)
-    {
-        g.setColour (modern::warm()); g.fillRect (x, top, bw, std::min (1.0f, -db / 24) * h);
-    }
-    else
-    {
-        const float bh = juce::jlimit (0.0f, 1.0f, (db + 60) / 66) * h;
-        const float fy = top + h - bh, y6 = top + h - 54.0f / 66 * h, y0 = top + h - 60.0f / 66 * h;
-        g.setColour (modern::accent()); g.fillRect (x, fy, bw, bh);
-        if (fy < y6) { g.setColour (rgb (255, 200, 70)); g.fillRect (x, fy, bw, y6 - fy); }
-        if (fy < y0) { g.setColour (rgb (255, 80, 80)); g.fillRect (x, fy, bw, y0 - fy); }
-        g.setColour (modern::dim().withAlpha (0.8f)); g.fillRect (x - 3, y0, bw + 6, 1.0f);
-    }
-    g.setColour (modern::panel().withAlpha (0.85f));
-    for (int k = 1; k < (int) (h / 4); ++k) g.fillRect (x, top + k * 4, bw, 1.0f);
-    g.setFont (font (10)); g.setColour (modern::dim()); ctext (g, label, x + bw * 0.5f, 250, 10);
-    g.setFont (font (10, false)); g.setColour (modern::text().withAlpha (0.9f));
-    ctext (g, isGr ? String (db, 1) : (db <= -60 ? String ("-inf") : String (juce::roundToInt (db))), x + bw * 0.5f, 266, 10);
-}
-
-void VC1Editor::drawModern (juce::Graphics& g)
-{
-    const bool bypass = paramValue ("bypass") > 0.5f;
     const float thr = knobValue (0), ratio = knobValue (1), knee = knobValue (4), out = knobValue (5);
+    const bool bypass = flag ("bypass");
 
-    modern::header (g, "VC-1");
-    modern::pill (g, 616, 76, bypass, inRect (mouseBase, 616, 13, 76, 20), "BYPASS", modern::warm());
-    modern::pill (g, 700, 84, false, inRect (mouseBase, 700, 13, 84, 20), "KONSOLE", modern::accent());
-
-    modern::panelRect (g, 16, 48, 236, 240);
-    modern::panelRect (g, 264, 48, 400, 240);
-    modern::panelRect (g, 676, 48, 108, 240);
-
-    // Kennlinie
-    const float gx = 28, gy = 58, gs = 180;
-    g.setColour (rgb (15, 17, 21)); g.fillRect (gx, gy, gs, gs);
-    g.setColour (rgb (38, 43, 52));
-    for (int k = 1; k < 5; ++k)
+    // ---- Kennlinie
+    const auto c = rCurve;
+    auto cx = [c] (float db) { return c.getX() + c.getWidth() * (db + 60.0f) / 60.0f; };
+    auto cy = [c] (float db) { return c.getBottom() - c.getHeight() * juce::jlimit (-0.1f, 1.1f, (db + 60.0f) / 60.0f); };
+    g.setColour (rgb (24, 27, 34)); g.fillRoundedRectangle (c, 4);
+    for (int d = -48; d < 0; d += 12)
     {
-        g.fillRect (gx + gs * k / 5, gy, 1.0f, gs);
-        g.fillRect (gx, gy + gs * k / 5, gs, 1.0f);
+        g.setColour (mc::grid());
+        g.fillRect (cx ((float) d), c.getY(), 1.0f, c.getHeight());
+        g.fillRect (c.getX(), cy ((float) d), c.getWidth(), 1.0f);
     }
-    g.setColour (rgb (56, 62, 75)); line (g, gx, gy + gs, gx + gs, gy, 1.0f);
-    const float tx = gx + (thr + 60) / 60 * gs;
-    g.setColour (modern::warm().withAlpha (0.6f));
-    for (int k = 0; k < (int) (gs / 8); ++k) g.fillRect (tx, gy + k * 8, 1.0f, 4.0f);
-
-    auto curveY = [&] (float x) {
-        return gy + gs - (juce::jlimit (-60.0f, 0.0f, VC1Processor::gainComputer (x, thr, ratio, knee) + out) + 60) / 60 * gs;
-    };
-    juce::Path c, fill;
-    fill.startNewSubPath (gx, gy + gs);
-    for (int k = 0; k <= (int) gs; k += 1)
+    g.setColour (rgb (255, 255, 255, 0.12f));
+    line (g, c.getX(), c.getBottom(), c.getRight(), c.getY(), 1.0f);
+    g.setColour (mc::red().withAlpha (0.35f));
+    g.fillRect (cx (thr), c.getY(), 1.0f, c.getHeight());
+    juce::Path curve;
+    for (float x = -60; x <= 0.01f; x += 0.5f)
     {
-        const float y = curveY (-60 + 60.0f * k / gs);
-        if (k == 0) c.startNewSubPath (gx, y); else c.lineTo (gx + k, y);
-        fill.lineTo (gx + k, y);
+        const float y = VC1Processor::gainComputer (x, thr, std::max (1.0f, ratio), knee) + out;
+        if (x == -60) curve.startNewSubPath (cx (x), cy (y)); else curve.lineTo (cx (x), cy (y));
     }
-    fill.lineTo (gx + gs, gy + gs); fill.closeSubPath();
-    g.setColour (modern::accent().withAlpha (0.09f)); g.fillPath (fill);
-    g.setColour (modern::accent()); g.strokePath (c, juce::PathStrokeType (2.0f));
+    g.saveState();
+    g.reduceClipRegion (c.toNearestInt());
+    g.setColour (modern::accent()); g.strokePath (curve, juce::PathStrokeType (2.2f));
     if (inDisp > -60)
     {
-        const float dx = gx + (inDisp + 60) / 60 * gs, dy = curveY (inDisp);
-        g.setColour (juce::Colours::white.withAlpha (0.18f)); g.fillEllipse (dx - 7, dy - 7, 14, 14);
-        g.setColour (juce::Colours::white); g.fillEllipse (dx - 3, dy - 3, 6, 6);
+        const float yv = VC1Processor::gainComputer (inDisp, thr, std::max (1.0f, ratio), knee) + out;
+        g.setColour (juce::Colours::white); g.fillEllipse (cx (inDisp) - 4, cy (yv) - 4, 8, 8);
     }
-    g.setFont (font (10)); g.setColour (modern::dim()); ltext (g, "TRANSFER", 28, 248, 10);
-    g.setFont (font (13)); g.setColour (modern::warm());
-    rtext (g, bypass ? String ("BYPASS") : "GR " + String (grDisp, 1) + " dB", 240, 246, 13);
-    g.setFont (font (10, false)); g.setColour (rgb (100, 108, 122));
-    ltext (g, juce::CharPointer_UTF8 ("IN \xe2\x86\x92   OUT \xe2\x86\x91"), 28, 266, 10);
+    g.restoreState();
+    g.setFont (font (9, false)); g.setColour (mc::gridText());
+    ltext (g, "IN", c.getRight() - 14, c.getBottom() - 13, 9);
+    ltext (g, "OUT", c.getX() + 4, c.getY() + 3, 9);
 
-    for (int i = 0; i < NK; ++i) drawModernKnob (g, i);
+    // ---- Verlauf: Eingang (Fläche), Ausgang (Linie), Gain Reduction (von oben)
+    const auto h = rHist;
+    g.setColour (rgb (24, 27, 34)); g.fillRoundedRectangle (h, 4);
+    g.setFont (font (9, false));
+    for (int d = -12; d > -60; d -= 12)
+    {
+        g.setColour (mc::grid()); g.fillRect (h.getX(), histY ((float) d), h.getWidth(), 1.0f);
+        g.setColour (mc::gridText()); ltext (g, String (d), h.getX() + 4, histY ((float) d) - 12, 9);
+    }
+    const int N = inH.size();
+    const float dx = h.getWidth() / (float) (N - 1);
+    auto grY = [h] (float v) { return h.getY() + h.getHeight() * juce::jlimit (0.0f, 1.0f, -v / 24.0f); };
+    juce::Path inP, outP, grP;
+    inP.startNewSubPath (h.getX(), h.getBottom());
+    for (int i = 0; i < N; ++i)
+    {
+        const float x = h.getX() + i * dx;
+        inP.lineTo (x, histY (inH[i]));
+        if (i == 0) { outP.startNewSubPath (x, histY (outH[i])); grP.startNewSubPath (x, grY (grH[i])); }
+        else { outP.lineTo (x, histY (outH[i])); grP.lineTo (x, grY (grH[i])); }
+    }
+    inP.lineTo (h.getRight(), h.getBottom()); inP.closeSubPath();
+    g.setColour (rgb (120, 135, 160, 0.28f)); g.fillPath (inP);
+    g.setColour (modern::accent().withAlpha (0.9f)); g.strokePath (outP, juce::PathStrokeType (1.4f));
+    juce::Path grFill (grP); grFill.lineTo (h.getRight(), h.getY()); grFill.lineTo (h.getX(), h.getY()); grFill.closeSubPath();
+    g.setColour (mc::red().withAlpha (0.18f)); g.fillPath (grFill);
+    g.setColour (mc::red()); g.strokePath (grP, juce::PathStrokeType (1.6f));
 
-    drawMeterBar (g, 690, "IN", inDisp, false);
-    drawMeterBar (g, 722, "GR", grDisp, true);
-    drawMeterBar (g, 754, "OUT", outDisp, false);
+    // Threshold-Linie (ziehbar)
+    const float ty = histY (thr);
+    g.setColour (mc::red().withAlpha (0.7f));
+    for (float x = h.getX(); x < h.getRight(); x += 8) g.fillRect (x, ty, 4.0f, 1.2f);
+    g.setFont (font (9)); ltext (g, "THR " + fmt::db (thr), h.getX() + 34, ty - 13, 9);
+
+    g.setColour (rgb (14, 16, 21, 0.85f)); g.fillRoundedRectangle (h.getRight() - 10 - 120, h.getY() + 6, 124, 44, 6);
+    g.setFont (font (20)); g.setColour (bypass ? modern::warm() : mc::red());
+    rtext (g, bypass ? String ("BYPASS") : String (grDisp, 1) + " dB", h.getRight() - 10, h.getY() + 8, 20);
+    g.setFont (font (9)); g.setColour (modern::dim());
+    rtext (g, "GAIN REDUCTION", h.getRight() - 10, h.getY() + 34, 9);
+
+    // ---- Pegel
+    const float my = 62, mh = 156;
+    drawMeter (g, { 724, my, 12, mh }, inDisp, modern::accent());
+    drawMeter (g, { 744, my, 12, mh }, grDisp, mc::red(), true, -24.0f);
+    drawMeter (g, { 764, my, 12, mh }, outDisp, modern::accent());
+    g.setFont (font (9)); g.setColour (modern::dim());
+    ctext (g, "IN", 730, my + mh + 4, 9); ctext (g, "GR", 750, my + mh + 4, 9); ctext (g, "OUT", 770, my + mh + 4, 9);
+
+    headerInfo (g, String::fromUTF8 ("Ziehen: Threshold  ·  Mausrad: Ratio"));
+}
+
+bool VC1Editor::displayDown (juce::Point<float> p, const juce::MouseEvent& e)
+{
+    beginEdit ("thr");
+    displayDrag (p, e);
+    return true;
+}
+
+void VC1Editor::displayDrag (juce::Point<float> p, const juce::MouseEvent&)
+{
+    float db;
+    if (p.x < rHist.getX() - 8) db = -60.0f + 60.0f * (p.x - rCurve.getX()) / rCurve.getWidth();   // Kennlinie: x = Threshold
+    else db = -60.0f * (p.y - rHist.getY()) / rHist.getHeight();
+    edit ("thr", juce::jlimit (-60.0f, 0.0f, db));
+}
+
+void VC1Editor::displayUp (juce::Point<float>) { endEdit ("thr"); }
+
+void VC1Editor::displayWheel (juce::Point<float>, float d, const juce::MouseEvent&)
+{
+    setValue ("ratio", juce::jlimit (1.0f, 20.0f, value ("ratio") * std::exp (d * 0.8f)));
 }

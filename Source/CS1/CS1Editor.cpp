@@ -15,7 +15,7 @@ struct KnobDef
 };
 
 // Lage im 1100x380-Raster; s0..s2 = beschriftete Skalenwerte (links, oben, rechts)
-const KnobDef knobs[] = {
+const KnobDef knobDefs[] = {
     { "trim", "TRIM", 59, 90, 18, ringNone, fDb, -24, 0, 24, mInput },
     { "drive", "DRIVE", 59, 170, 18, ringAmber, fPct, 0, 50, 100, mInput },
     { "hpf", "HPF", 144, 90, 18, ringNone, fHz, 16, 80, 400, mFilter },
@@ -43,7 +43,7 @@ const KnobDef knobs[] = {
     { "dsRange", "RANGE", 909, 250, 14, ringNone, fRange, 0, 10, 20, mDs },
     { "out", "LEVEL", 1020, 90, 20, ringBlue, fDb, -24, 0, 24, mOut },
 };
-constexpr int NK = (int) std::size (knobs);
+constexpr int NK = (int) std::size (knobDefs);
 
 struct Column { float x0, x1; const char* title; const char* onId; };
 const Column columns[] = {
@@ -79,15 +79,50 @@ Colour ringColour (int ring, int mod)
     }
 }
 
-// Schaltflächen der Workflow-Leiste und in den Modulen
+// Schaltflächen der Workflow-Leiste und in den Modulen (Raster des Kanals, ohne Kopfzeile)
 constexpr float presetX0 = 290, presetW = 44, presetStep = 50, rowY = 322, rowH = 18;
 const juce::Rectangle<float> rAutoTrim { 24, 244, 70, 14 }, rLfBell { 311, 244, 40, 14 }, rHfBell { 596, 244, 40, 14 },
                              rPreEq { 784, 244, 60, 14 }, rAutoGain { 985, 268, 70, 14 },
-                             rA { 806, rowY, 26, rowH }, rB { 838, rowY, 26, rowH }, rView { 876, rowY, 54, rowH },
-                             rBypass { 1026, 300, 48, 52 }, rOled { 14, 300, 262, 50 };
+                             rBypass { 1026, 300, 48, 52 }, rOled { 14, 300, 262, 50 }, rEq { 806, 300, 270, 60 };
 
-juce::Rectangle<float> presetRect (int i) { return { presetX0 + i * presetStep, rowY, presetW, rowH }; }
+// Hilfetexte der Regler (mehrere Regler heißen gleich, z. B. FREQ)
+const std::map<String, const char*> knobHelp = {
+    { "trim", "Eingangspegel vor allem anderen. AUTO TRIM stellt ihn automatisch auf -18 dBFS RMS." },
+    { "drive", "Analoge Sättigung (überabgetastet): mehr Dichte und Obertöne. 0 = sauber." },
+    { "hpf", "Hochpass 18 dB/Okt: entfernt Rumpeln und Bässe darunter. Ganz links = aus." },
+    { "lpf", "Tiefpass 12 dB/Okt: zähmt Höhen und Fizz. Ganz rechts = aus." },
+    { "gateThr", "Gate: unter diesem Pegel wird abgesenkt (Übersprechen, Rauschen)." },
+    { "gateRange", "Gate: wie weit höchstens abgesenkt wird." },
+    { "gateRel", "Gate: wie schnell es nach dem Signal schließt." },
+    { "lfGain", "Bässe anheben oder absenken (Shelf; mit BELL als Glocke)." },
+    { "lmfGain", "Untere Mitten (Glocke): Matsch, Pappe, Box-Klang." },
+    { "hmfGain", "Obere Mitten (Glocke): Präsenz, Anschlag, Härte." },
+    { "hfGain", "Höhen anheben oder absenken (Shelf; mit BELL als Glocke)." },
+    { "lfFreq", "Frequenz des LF-Bandes." },
+    { "lmfFreq", "Frequenz des LMF-Bandes." },
+    { "hmfFreq", "Frequenz des HMF-Bandes." },
+    { "hfFreq", "Frequenz des HF-Bandes." },
+    { "lmfQ", "Bandbreite: hoch = schmal und chirurgisch, niedrig = breit und musikalisch." },
+    { "hmfQ", "Bandbreite: hoch = schmal und chirurgisch, niedrig = breit und musikalisch." },
+    { "compThr", "Kompressor: ab diesem Pegel wird komprimiert. Tiefer = mehr Wirkung." },
+    { "compRatio", "Kompressor: wie stark über dem Threshold gedrückt wird. 2:1 sanft, 4:1 deutlich, ab 10:1 wie ein Limiter." },
+    { "compAtt", "Kompressor: wie schnell er einsetzt. Kurz fängt Spitzen, länger lässt den Anschlag durch." },
+    { "compRel", "Kompressor: wie schnell er loslässt. Kurz = lebendig, lang = gleichmäßig." },
+    { "compMix", "Parallel-Kompression: Anteil des komprimierten Signals." },
+    { "dsFreq", "De-Esser: ab dieser Frequenz wird abgesenkt." },
+    { "dsThr", "De-Esser: ab diesem Pegel der Höhen greift er." },
+    { "dsRange", "De-Esser: wie weit höchstens abgesenkt wird." },
+    { "out", "Ausgangspegel des Kanals." },
+};
+
+const char* const moduleHelp[] = { "", "", "Gate/Expander: senkt leise Passagen ab, z. B. Übersprechen und Rauschen. Klicken = Modul ein/aus.",
+                                   "Vierband-EQ im Konsolen-Stil. Klicken = Modul ein/aus.",
+                                   "Kompressor. Klicken = Modul ein/aus.",
+                                   "De-Esser: senkt scharfe S-Laute und Fizz über der Frequenz ab. Klicken = Modul ein/aus.", "" };
+
+juce::Rectangle<float> sourceRect (int i) { return { presetX0 + i * presetStep, rowY, presetW, rowH }; }
 juce::Rectangle<float> titleRect (int c) { return { columns[c].x0 + 4, 16, columns[c].x1 - columns[c].x0 - 8, 16 }; }
+juce::Rectangle<float> down (juce::Rectangle<float> r) { return r.translated (0, CS1Editor::top); }
 
 constexpr float pi = juce::MathConstants<float>::pi;
 constexpr float a0 = -0.75f * pi;
@@ -101,139 +136,126 @@ String hz (float v)
 }
 }
 
-CS1Editor::CS1Editor (CS1Processor& p) : AudioProcessorEditor (p), proc (p)
+CS1Editor::CS1Editor (CS1Processor& p) : ModernEditor (p, p.apvts, "CS-1", W0, H0), proc (p)
 {
-    setResizable (true, true);
-    setResizeLimits (550, 190, 2200, 760);
-    getConstrainer()->setFixedAspectRatio (W / H);
-    setSize ((int) W, (int) H);
     knobSprites.resize ((size_t) NK);
-    startTimerHz (30);
+    enableViewSwitch();
+    addHelp ({ { "AUTO TRIM", "Misst 3 s Signal und stellt TRIM auf -18 dBFS RMS. Nochmal klicken bricht ab." },
+               { "BELL", "Band als Glocke statt als Shelf." },
+               { "PRE EQ", "Kompressor vor dem EQ statt danach." },
+               { "AUTO GAIN", "Hält den Ausgang so laut wie den getrimmten Eingang. Teil des Klangs, bleibt im Mixdown." } });
+    syncView();
 }
 
-void CS1Editor::toggle (const char* id)
+// ------------------------------------------------------------- Ansichten
+void CS1Editor::syncView()
 {
-    proc.setParam (id, flag (id) ? 0.0f : 1.0f);
-    repaint();
+    const int v = value ("view") > 0.5f ? 1 : 0;
+    if (v == builtView) return;
+    builtView = v;
+    clearControls();
+    if (v == 1) buildModern(); else buildConsole();
 }
 
-int CS1Editor::hitKnob (juce::Point<float> b) const
+void CS1Editor::addWorkflowButtons (bool modern)
+{
+    auto rackPaint = [] (const String& label)
+    {
+        return [label] (Graphics& g, juce::Rectangle<float> r, bool on, bool) { drawButton (g, r.getX(), r.getY(), r.getWidth(), r.getHeight(), on, label); };
+    };
+    auto add = [&] (juce::Rectangle<float> r, const String& label, std::function<bool()> on, std::function<void()> click, Colour c = modern::accent())
+    {
+        MButton b { down (r), [label] { return label; }, on, click, c };
+        if (! modern) b.paint = rackPaint (label);
+        buttons.push_back (b);
+    };
+    add (rAutoTrim, "AUTO TRIM", [this] { return proc.autoTrimArmed.load(); },
+         [this] { proc.autoTrimArmed = ! proc.autoTrimArmed.load(); proc.autoTrimProgress = 0; });
+    add (rLfBell, "BELL", [this] { return flag ("lfBell"); }, [this] { toggle ("lfBell"); }, modColour (mEq));
+    add (rHfBell, "BELL", [this] { return flag ("hfBell"); }, [this] { toggle ("hfBell"); }, modColour (mEq));
+    add (rPreEq, "PRE EQ", [this] { return flag ("compPre"); }, [this] { toggle ("compPre"); }, modColour (mComp));
+    add (rAutoGain, "AUTO GAIN", [this] { return flag ("autoGain"); }, [this] { toggle ("autoGain"); });
+    // Quell-Presets: ein Klick lädt das Werkspreset; TRIM, OUTPUT und AUTO GAIN bleiben
+    for (int i = 0; i < CS1Processor::numPresets; ++i)
+    {
+        const String name = CS1Processor::presetNames[i];
+        add (sourceRect (i), name.toUpperCase(), [this, name] { return proc.presetName == name; }, [this, i] { proc.applyPreset (i); });
+        buttons.back().help = String::fromUTF8 ("Quell-Preset ") + name + String::fromUTF8 (": lädt einen Startpunkt für diese Spur. TRIM, OUTPUT und AUTO GAIN bleiben.");
+    }
+}
+
+void CS1Editor::buildConsole()
 {
     for (int i = 0; i < NK; ++i)
     {
-        const float dx = b.x - knobs[i].cx, dy = b.y - knobs[i].cy, rr = knobs[i].r + 8;
-        if (dx * dx + dy * dy < rr * rr) return i;
+        MKnob k { knobDefs[i].id, knobDefs[i].label, knobDefs[i].cx, knobDefs[i].cy + top, knobDefs[i].r, modern::accent(),
+                  [this, i] (float v) { return formatValue (i, v); } };
+        k.noValue = true;
+        k.help = String::fromUTF8 (knobHelp.at (knobDefs[i].id));
+        knobs.push_back (k);
     }
-    return -1;
-}
-
-// ------------------------------------------------------------------- Maus
-void CS1Editor::mouseMove (const juce::MouseEvent& e)
-{
-    mouseBase = toBase (e.position);
-    hot = hitKnob (mouseBase);
-    repaint();
-}
-
-void CS1Editor::mouseExit (const juce::MouseEvent&)
-{
-    mouseBase = { -1000, -1000 };
-    if (drag < 0) hot = -1;
-    repaint();
-}
-
-void CS1Editor::mouseDown (const juce::MouseEvent& e)
-{
-    const auto b = toBase (e.position);
+    // Modultitel mit LED: Fläche zum Ein-/Ausschalten (gezeichnet von der Konsole)
     for (int c = 0; c < (int) std::size (columns); ++c)
-        if (columns[c].onId != nullptr && titleRect (c).contains (b)) { toggle (columns[c].onId); return; }
-    for (int i = 0; i < CS1Processor::numPresets; ++i)
-        if (presetRect (i).contains (b)) { proc.applyPreset (i); repaint(); return; }
-    if (rAutoTrim.contains (b)) { proc.autoTrimArmed = ! proc.autoTrimArmed.load(); proc.autoTrimProgress = 0; repaint(); return; }
-    if (rLfBell.contains (b)) { toggle ("lfBell"); return; }
-    if (rHfBell.contains (b)) { toggle ("hfBell"); return; }
-    if (rPreEq.contains (b)) { toggle ("compPre"); return; }
-    if (rAutoGain.contains (b)) { toggle ("autoGain"); return; }
-    if (rA.contains (b)) { proc.selectSlot (0); repaint(); return; }
-    if (rB.contains (b)) { proc.selectSlot (1); repaint(); return; }
-    if (rView.contains (b)) { toggle ("view"); return; }
-    if (rBypass.contains (b)) { toggle ("bypass"); return; }
+        if (columns[c].onId != nullptr)
+        {
+            const char* id = columns[c].onId;
+            MButton b { down (titleRect (c)), [c] { return String (columns[c].title); }, [this, id] { return flag (id); }, [this, id] { toggle (id); } };
+            b.help = String::fromUTF8 (moduleHelp[c]);
+            b.paint = [] (Graphics&, juce::Rectangle<float>, bool, bool) {};
+            buttons.push_back (b);
+        }
+    addWorkflowButtons (false);
+    MButton byp { down (rBypass), [] { return String ("BYPASS"); }, [this] { return flag ("bypass"); }, [this] { toggle ("bypass"); } };
+    byp.paint = [] (Graphics&, juce::Rectangle<float>, bool, bool) {};
+    buttons.push_back (byp);
+}
 
-    hot = hitKnob (b);
-    if (hot >= 0)
+void CS1Editor::buildModern()
+{
+    for (int i = 0; i < NK; ++i)
     {
-        drag = hot;
-        auto* p = param (knobs[drag].id);
-        dragNorm = p->getValue();
-        lastY = b.y;
-        p->beginChangeGesture();
+        const auto& d = knobDefs[i];
+        const bool bipolar = d.fmt == fDb && d.s0 < 0 && d.s2 > 0;
+        MKnob k { d.id, d.label, d.cx, d.cy + top, d.r, ringColour (d.ring, d.mod), [this, i] (float v) { return formatValue (i, v); }, bipolar };
+        k.help = String::fromUTF8 (knobHelp.at (d.id));
+        knobs.push_back (k);
     }
-}
-
-void CS1Editor::mouseDrag (const juce::MouseEvent& e)
-{
-    const auto b = toBase (e.position);
-    mouseBase = b;
-    if (drag < 0) return;
-    dragNorm = juce::jlimit (0.0f, 1.0f, dragNorm + (lastY - b.y) / (e.mods.isShiftDown() ? 900.0f : 220.0f));
-    lastY = b.y;
-    param (knobs[drag].id)->setValueNotifyingHost (dragNorm);
-    repaint();
-}
-
-void CS1Editor::mouseUp (const juce::MouseEvent& e)
-{
-    if (drag >= 0) param (knobs[drag].id)->endChangeGesture();
-    drag = -1;
-    hot = hitKnob (toBase (e.position));
-    repaint();
-}
-
-void CS1Editor::mouseDoubleClick (const juce::MouseEvent& e)
-{
-    const int k = hitKnob (toBase (e.position));
-    if (k < 0) return;
-    auto* p = param (knobs[k].id);
-    p->beginChangeGesture();
-    p->setValueNotifyingHost (p->getDefaultValue());
-    p->endChangeGesture();
-    repaint();
-}
-
-void CS1Editor::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
-{
-    const int k = hitKnob (toBase (e.position));
-    if (k < 0) return;
-    auto* p = param (knobs[k].id);
-    const float dir = w.isReversed ? -1.0f : 1.0f;
-    p->beginChangeGesture();
-    p->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, p->getValue() + dir * w.deltaY * (e.mods.isShiftDown() ? 0.035f : 0.17f)));
-    p->endChangeGesture();
-    repaint();
+    // schaltbare Module: Titel als Pill in der Modulfarbe
+    for (int c = 0; c < (int) std::size (columns); ++c)
+        if (columns[c].onId != nullptr)
+        {
+            const char* id = columns[c].onId;
+            const auto tr = titleRect (c);
+            const float pw = font (10).getStringWidthFloat (columns[c].title) + 22;
+            MButton b { { tr.getCentreX() - pw * 0.5f, 17 + top, pw, 16 }, [c] { return String (columns[c].title); },
+                        [this, id] { return flag (id); }, [this, id] { toggle (id); }, modColour (c) };
+            b.help = String::fromUTF8 (moduleHelp[c]);
+            buttons.push_back (b);
+        }
+    addWorkflowButtons (true);
 }
 
 // ---------------------------------------------------------------- Anzeige
-void CS1Editor::timerCallback()
+void CS1Editor::tick()
 {
     auto fall = [] (float& disp, float v, float rate) { disp = v > disp ? v : std::max (-90.0f, disp - rate); };
     auto rise = [] (float& disp, float v) { disp = v < disp ? v : std::min (0.0f, disp + 0.6f); };
-    fall (inDisp, a2db (proc.inPeak.exchange (0.0f)), 1.2f);
-    fall (outDisp, a2db (proc.outPeak.exchange (0.0f)), 1.2f);
+    fall (inDisp, dsp::a2db (proc.inPeak.exchange (0.0f)), 1.2f);
+    fall (outDisp, dsp::a2db (proc.outPeak.exchange (0.0f)), 1.2f);
     rise (gateDisp, proc.gateGr.exchange (0.0f));
     rise (compDisp, proc.compGr.exchange (0.0f));
     rise (dsDisp, proc.dsGr.exchange (0.0f));
 
     if (proc.autoTrimDone.exchange (false))
-        proc.setParam ("trim", proc.autoTrimResult.load());
-    repaint();
+        setValue ("trim", proc.autoTrimResult.load());
 }
 
 String CS1Editor::formatValue (int i, float v) const
 {
-    const String id = knobs[i].id;
+    const String id = knobDefs[i].id;
     if (id == "hpf" && v <= 16.5f) return "OFF";
     if (id == "lpf" && v >= 21500.0f) return "OFF";
-    switch (knobs[i].fmt)
+    switch (knobDefs[i].fmt)
     {
         case fDb:    return (v > 0.05f ? "+" : "") + String (v, 1) + " dB";
         case fRange: return String (v, 1) + " dB";
@@ -248,9 +270,9 @@ String CS1Editor::formatValue (int i, float v) const
 
 String CS1Editor::formatScale (int i, float v) const
 {
-    const String id = knobs[i].id;
+    const String id = knobDefs[i].id;
     if ((id == "hpf" && v <= 16.5f) || (id == "lpf" && v >= 21500.0f)) return "OFF";
-    switch (knobs[i].fmt)
+    switch (knobDefs[i].fmt)
     {
         case fHz: return hz (v);
         case fMs: return v >= 1000 ? String (v / 1000.0f, 1).trimCharactersAtEnd ("0").trimCharactersAtEnd (".") + "s"
@@ -261,34 +283,54 @@ String CS1Editor::formatScale (int i, float v) const
     }
 }
 
-void CS1Editor::rebuild (float ps)
+void CS1Editor::rebuildSprites (float ps)
 {
     for (int i = 0; i < NK; ++i)
-        knobSprites[(size_t) i] = buildKnob (knobs[i].cx, knobs[i].cy, knobs[i].r, knobs[i].ring, ps, H);
-    toggleSprites[0] = buildToggle (rBypass.getCentreX(), 326, false, ps, H);
-    toggleSprites[1] = buildToggle (rBypass.getCentreX(), 326, true, ps, H);
+        knobSprites[(size_t) i] = buildKnob (knobDefs[i].cx, knobDefs[i].cy, knobDefs[i].r, knobDefs[i].ring, ps, 380.0f);
+    toggleSprites[0] = buildToggle (rBypass.getCentreX(), 326, false, ps, 380.0f);
+    toggleSprites[1] = buildToggle (rBypass.getCentreX(), 326, true, ps, 380.0f);
     builtPs = ps;
 }
 
-void CS1Editor::paint (juce::Graphics& g)
+void CS1Editor::drawBackground (Graphics& g)
 {
-    s = std::max (0.25f, std::min (getWidth() / W, getHeight() / H));
-    ox = std::floor ((getWidth() - W * s) * 0.5f);
-    oy = std::floor ((getHeight() - H * s) * 0.5f);
-    g.fillAll (isModern() ? modern::bg() : rgb (12, 12, 13));
-    g.addTransform (juce::AffineTransform::scale (s).translated (ox, oy));
-    if (isModern()) drawModern (g);
+    g.saveState();
+    g.addTransform (juce::AffineTransform::translation (0, top));
+    if (builtView == 1) drawModern (g);
     else
     {
+        // 3D-Teile in der tatsächlichen Bildschirmauflösung neu berechnen, wenn sie sich ändert
         const float ps = std::round (g.getInternalContext().getPhysicalPixelScaleFactor() * 4.0f) / 4.0f;
-        if (std::abs (ps - builtPs) > 0.01f) rebuild (ps);
+        if (std::abs (ps - builtPs) > 0.01f) rebuildSprites (ps);
+        g.reduceClipRegion (juce::Rectangle<int> (0, 0, (int) W, 380));
         drawConsole (g);
     }
+    g.restoreState();
+}
+
+// abgeschaltete Module abdunkeln (über Reglern und Tasten)
+void CS1Editor::drawOverlay (Graphics& g)
+{
+    for (const auto& col : columns)
+        if (col.onId != nullptr && ! flag (col.onId))
+        {
+            if (builtView == 1) { g.setColour (modern::panel().withAlpha (0.6f)); g.fillRect (col.x0 + 4, 38.0f + top, col.x1 - col.x0 - 8, 240.0f); }
+            else { g.setColour (juce::Colours::black.withAlpha (0.38f)); g.fillRect (col.x0 + 2, 36.0f + top, col.x1 - col.x0 - 3, 246.0f); }
+        }
+}
+
+void CS1Editor::drawKnob (Graphics& g, int i)
+{
+    if (builtView == 1 || i >= NK) { ModernEditor::drawKnob (g, i); return; }
+    g.saveState();
+    g.addTransform (juce::AffineTransform::translation (0, top));
+    drawConsoleKnob (g, i);
+    g.restoreState();
 }
 
 void CS1Editor::drawScale (juce::Graphics& g, int i, float rOuter, Colour c)
 {
-    const auto& k = knobs[i];
+    const auto& k = knobDefs[i];
     auto* p = param (k.id);
     auto f = font (8);
     g.setFont (f);
@@ -306,9 +348,9 @@ void CS1Editor::drawScale (juce::Graphics& g, int i, float rOuter, Colour c)
     }
 }
 
-void CS1Editor::drawKnob (juce::Graphics& g, int i)
+void CS1Editor::drawConsoleKnob (juce::Graphics& g, int i)
 {
-    const auto& k = knobs[i];
+    const auto& k = knobDefs[i];
     const float cx = k.cx, cy = k.cy, r = k.r, rc = r * 0.58f;
     const float n = juce::jlimit (0.0f, 1.0f, param (k.id)->getValue());
     const float a = a0 + n * 1.5f * pi, sa = std::sin (a), ca = -std::cos (a);
@@ -326,31 +368,6 @@ void CS1Editor::drawKnob (juce::Graphics& g, int i)
     drawScale (g, i, r + 1, silk());
     g.setFont (font (10)); g.setColour (silk());
     ctext (g, k.label, cx, cy - r - 33, 10);
-}
-
-void CS1Editor::drawFlatKnob (juce::Graphics& g, int i)
-{
-    const auto& k = knobs[i];
-    const float cx = k.cx, cy = k.cy, r = k.r;
-    const float n = juce::jlimit (0.0f, 1.0f, param (k.id)->getValue());
-    const float a = a0 + n * 1.5f * pi;
-    const bool hv = (drag >= 0 ? drag : hot) == i;
-    const Colour c = ringColour (k.ring, k.mod);
-    const float w = r > 17 ? 5.0f : 4.0f;
-    g.setColour (rgb (46, 51, 62)); arc (g, cx, cy, r - w * 0.5f, a0, -a0, w);
-    // bipolare Regler (Gain) füllen von der Mitte aus
-    const bool bipolar = k.fmt == fDb && k.s0 < 0 && k.s2 > 0;
-    const float from = bipolar ? 0.0f : a0;
-    if (std::abs (a - from) > 0.01f) { g.setColour (c); arc (g, cx, cy, r - w * 0.5f, std::min (from, a), std::max (from, a), w); }
-    const float ri = r - w - 2;
-    g.setColour (rgb (24, 27, 34)); g.fillEllipse (cx - ri, cy - ri, 2 * ri, 2 * ri);
-    g.setColour (hv ? modern::dim() : rgb (56, 62, 75)); g.drawEllipse (cx - ri, cy - ri, 2 * ri, 2 * ri, 1.0f);
-    g.setColour (c);
-    line (g, cx + std::sin (a) * ri * 0.35f, cy - std::cos (a) * ri * 0.35f, cx + std::sin (a) * ri * 0.9f, cy - std::cos (a) * ri * 0.9f, 2.0f);
-    g.setFont (font (9)); g.setColour (modern::dim());
-    ctext (g, k.label, cx, cy - r - 14, 9);
-    g.setFont (font (9)); g.setColour (hv ? juce::Colours::white : modern::text().withAlpha (0.85f));
-    ctext (g, formatValue (i, param (k.id)->convertFrom0to1 (n)), cx, cy + r + 3, 9);
 }
 
 void CS1Editor::drawLadder (juce::Graphics& g, float x, float y, float h, float db, bool isGr, bool modern)
@@ -388,25 +405,25 @@ void CS1Editor::drawReadout (juce::Graphics& g, juce::Rectangle<float> r, bool m
     const Colour c2 = modern ? modern::text() : rgb (226, 240, 255);
     const float x = r.getX() + 10, y1 = r.getY() + 8, y2 = r.getY() + 27;
     const int h = drag >= 0 ? drag : hot;
-    if (h >= 0)
+    if (h >= 0 && h < NK)
     {
         g.setFont (font (11)); g.setColour (c1);
-        String name = String (moduleNames[knobs[h].mod]) + "  " + knobs[h].label;
-        if (knobs[h].mod == mEq)
+        String name = String (moduleNames[knobDefs[h].mod]) + "  " + knobDefs[h].label;
+        if (knobDefs[h].mod == mEq)
         {
             static const char* const bands[] = { "LF", "LMF", "HMF", "HF" };
-            const String band = bands[juce::jlimit (0, 3, juce::roundToInt ((knobs[h].cx - 331) / 95.0f))];
-            name = "EQ  " + band + "  " + (String (knobs[h].label) == band ? String ("GAIN") : String (knobs[h].label));
+            const String band = bands[juce::jlimit (0, 3, juce::roundToInt ((knobDefs[h].cx - 331) / 95.0f))];
+            name = "EQ  " + band + "  " + (String (knobDefs[h].label) == band ? String ("GAIN") : String (knobDefs[h].label));
         }
         ltext (g, name, x, y1, 11);
         g.setFont (font (15)); g.setColour (c2);
-        ltext (g, formatValue (h, value (knobs[h].id)), x, y2, 15);
+        ltext (g, formatValue (h, value (knobDefs[h].id)), x, y2, 15);
         return;
     }
     g.setFont (font (11)); g.setColour (c1);
-    String top = proc.autoTrimArmed.load() ? "AUTO TRIM  " + String (juce::roundToInt (proc.autoTrimProgress.load() * 100)) + " %"
-                                           : (proc.presetName.isEmpty() ? String ("CS-1") : proc.presetName);
-    ltext (g, top, x, y1, 11);
+    const String head = proc.autoTrimArmed.load() ? "AUTO TRIM  " + String (juce::roundToInt (proc.autoTrimProgress.load() * 100)) + " %"
+                                                  : proc.presetName.toUpperCase();
+    ltext (g, head, x, y1, 11);
     rtext (g, String ("SLOT ") + (proc.getSlot() == 0 ? "A" : "B"), r.getRight() - 10, y1, 11);
     g.setFont (font (12)); g.setColour (c2);
     auto grs = [] (float v) { return v > -0.05f ? String ("0.0") : String (v, 1); };
@@ -414,23 +431,28 @@ void CS1Editor::drawReadout (juce::Graphics& g, juce::Rectangle<float> r, bool m
                               : "GATE " + grs (gateDisp) + "   COMP " + grs (compDisp) + "   DS " + grs (dsDisp), x, y2 + 2, 12);
 }
 
-void CS1Editor::drawRackOrPill (juce::Graphics& g, float x, float y, float w, float h, bool on, const String& label, bool modern)
+// EQ-Kurve der Filter und Bänder, klein in der Workflow-Leiste
+void CS1Editor::drawEqCurve (Graphics& g, juce::Rectangle<float> r)
 {
-    if (! modern) { drawButton (g, x, y, w, h, on, label); return; }
-    const bool hover = juce::Rectangle<float> (x, y, w, h).contains (mouseBase);
-    g.setColour (on ? modern::accent() : (hover ? rgb (56, 62, 75) : rgb (40, 45, 55)));
-    g.fillRoundedRectangle (x, y, w, h, h * 0.5f);
-    g.setColour (on ? modern::bg() : modern::dim());
-    float fh = 9.0f;
-    while (fh > 6.5f && font (fh).getStringWidthFloat (label) > w - 6) fh -= 0.5f;
-    g.setFont (font (fh));
-    g.drawText (label, juce::Rectangle<float> (x, y, w, h), juce::Justification::centred, false);
+    g.setColour (mc::screen()); g.fillRoundedRectangle (r, 6);
+    const auto in = r.reduced (6, 5);
+    drawFreqGrid (g, in, false);
+    auto y = [in] (float db) { return in.getCentreY() - juce::jlimit (-1.0f, 1.0f, db / 18.0f) * in.getHeight() * 0.5f; };
+    g.setColour (mc::grid()); g.fillRect (in.getX(), in.getCentreY(), in.getWidth(), 1.0f);
+    juce::Path p;
+    for (float x = in.getX(); x <= in.getRight(); x += 1.5f)
+    {
+        const float v = y (proc.eqResponseDb (xToFreq (x, in)));
+        if (x == in.getX()) p.startNewSubPath (x, v); else p.lineTo (x, v);
+    }
+    g.setColour (flag ("eqOn") ? modern::accent() : modern::dim()); g.strokePath (p, juce::PathStrokeType (1.6f));
+    g.setFont (font (9)); g.setColour (modern::dim());
+    ltext (g, "EQ + FILTER", r.getX() + 8, r.getY() + 5, 9);
 }
 
-// ---------------------------------------------------------------- Konsole
 void CS1Editor::drawConsole (juce::Graphics& g)
 {
-    drawFaceplate (g, W, H);
+    drawFaceplate (g, W, 380.0f);
     for (int c = 1; c < (int) std::size (columns); ++c) drawSeam (g, columns[c].x0, 22, 258);
     g.setColour (juce::Colours::black.withAlpha (0.7f)); g.fillRect (14.0f, 286.0f, W - 28, 1.0f);
     g.setColour (juce::Colours::white.withAlpha (0.06f)); g.fillRect (14.0f, 287.0f, W - 28, 1.0f);
@@ -454,14 +476,6 @@ void CS1Editor::drawConsole (juce::Graphics& g)
         ctext (g, col.title, cx, 20, 11);
     }
 
-    for (int i = 0; i < NK; ++i) drawKnob (g, i);
-
-    drawButton (g, rAutoTrim.getX(), rAutoTrim.getY(), rAutoTrim.getWidth(), rAutoTrim.getHeight(), proc.autoTrimArmed.load(), "AUTO TRIM");
-    drawButton (g, rLfBell.getX(), rLfBell.getY(), rLfBell.getWidth(), rLfBell.getHeight(), flag ("lfBell"), "BELL");
-    drawButton (g, rHfBell.getX(), rHfBell.getY(), rHfBell.getWidth(), rHfBell.getHeight(), flag ("hfBell"), "BELL");
-    drawButton (g, rPreEq.getX(), rPreEq.getY(), rPreEq.getWidth(), rPreEq.getHeight(), flag ("compPre"), "PRE EQ");
-    drawButton (g, rAutoGain.getX(), rAutoGain.getY(), rAutoGain.getWidth(), rAutoGain.getHeight(), flag ("autoGain"), "AUTO GAIN");
-
     // Meter
     drawLadder (g, 987, 128, 108, inDisp, false, false);
     drawLadder (g, 1013, 128, 108, compDisp, true, false);
@@ -469,24 +483,8 @@ void CS1Editor::drawConsole (juce::Graphics& g)
     g.setFont (font (8)); g.setColour (silk (0.9f));
     ctext (g, "IN", 994, 240, 8); ctext (g, "GR", 1020, 240, 8); ctext (g, "OUT", 1046, 240, 8);
 
-    // abgeschaltete Module abdunkeln
-    for (const auto& col : columns)
-        if (col.onId != nullptr && ! flag (col.onId))
-        {
-            g.setColour (juce::Colours::black.withAlpha (0.38f));
-            g.fillRect (col.x0 + 2, 36.0f, col.x1 - col.x0 - 3, 246.0f);
-        }
-
     // --- Workflow-Leiste ---
     drawReadout (g, rOled, false);
-    for (int i = 0; i < CS1Processor::numPresets; ++i)
-    {
-        auto r = presetRect (i);
-        drawButton (g, r.getX(), r.getY(), r.getWidth(), r.getHeight(), proc.presetName == CS1Processor::presetNames[i], CS1Processor::presetNames[i]);
-    }
-    drawButton (g, rA.getX(), rA.getY(), rA.getWidth(), rA.getHeight(), proc.getSlot() == 0, "A");
-    drawButton (g, rB.getX(), rB.getY(), rB.getWidth(), rB.getHeight(), proc.getSlot() == 1, "B");
-    drawButton (g, rView.getX(), rView.getY(), rView.getWidth(), rView.getHeight(), false, "MODERN");
 
     g.setFont (font (22)); g.setColour (silk()); ltext (g, "CS-1", 944, 304, 22);
     g.setFont (font (8)); g.setColour (silk (0.75f)); ltext (g, "ONNO CHANNEL", 944, 332, 8);
@@ -497,37 +495,19 @@ void CS1Editor::drawConsole (juce::Graphics& g)
 }
 
 // ---------------------------------------------------------------- Modern
-void CS1Editor::drawModern (juce::Graphics& g)
+void CS1Editor::drawModern (Graphics& g)
 {
     for (int c = 0; c < (int) std::size (columns); ++c)
     {
         const auto& col = columns[c];
-        const bool en = col.onId == nullptr || flag (col.onId);
         modern::panelRect (g, col.x0 + 3, 12, col.x1 - col.x0 - 6, 270);
-        auto tr = titleRect (c);
-        const Colour mc = modColour (c);
-        if (col.onId != nullptr)
+        if (col.onId == nullptr)
         {
-            const float pw = font (10).getStringWidthFloat (col.title) + 22;
-            auto pr = juce::Rectangle<float> (tr.getCentreX() - pw * 0.5f, 17, pw, 16);
-            g.setColour (en ? mc : rgb (46, 51, 62)); g.fillRoundedRectangle (pr, 8);
-            g.setColour (en ? modern::bg() : modern::dim()); g.setFont (font (10));
-            g.drawText (col.title, pr, juce::Justification::centred, false);
-        }
-        else
-        {
-            g.setColour (mc); g.setFont (font (10));
+            auto tr = titleRect (c);
+            g.setColour (modColour (c)); g.setFont (font (10));
             g.drawText (col.title, juce::Rectangle<float> (tr.getX(), 17, tr.getWidth(), 16), juce::Justification::centred, false);
         }
     }
-
-    for (int i = 0; i < NK; ++i) drawFlatKnob (g, i);
-
-    drawRackOrPill (g, rAutoTrim.getX(), rAutoTrim.getY(), rAutoTrim.getWidth(), rAutoTrim.getHeight(), proc.autoTrimArmed.load(), "AUTO TRIM", true);
-    drawRackOrPill (g, rLfBell.getX(), rLfBell.getY(), rLfBell.getWidth(), rLfBell.getHeight(), flag ("lfBell"), "BELL", true);
-    drawRackOrPill (g, rHfBell.getX(), rHfBell.getY(), rHfBell.getWidth(), rHfBell.getHeight(), flag ("hfBell"), "BELL", true);
-    drawRackOrPill (g, rPreEq.getX(), rPreEq.getY(), rPreEq.getWidth(), rPreEq.getHeight(), flag ("compPre"), "PRE EQ", true);
-    drawRackOrPill (g, rAutoGain.getX(), rAutoGain.getY(), rAutoGain.getWidth(), rAutoGain.getHeight(), flag ("autoGain"), "AUTO GAIN", true);
 
     drawLadder (g, 987, 128, 108, inDisp, false, true);
     drawLadder (g, 1013, 128, 108, compDisp, true, true);
@@ -535,35 +515,11 @@ void CS1Editor::drawModern (juce::Graphics& g)
     g.setFont (font (9)); g.setColour (modern::dim());
     ctext (g, "IN", 994, 240, 9); ctext (g, "GR", 1020, 240, 9); ctext (g, "OUT", 1046, 240, 9);
 
-    for (const auto& col : columns)
-        if (col.onId != nullptr && ! flag (col.onId))
-        {
-            g.setColour (modern::panel().withAlpha (0.6f));
-            g.fillRect (col.x0 + 4, 38.0f, col.x1 - col.x0 - 8, 240.0f);
-        }
-
     // --- Workflow-Leiste ---
     modern::panelRect (g, 10, 292, W - 20, 76);
+    g.setColour (mc::screen()); g.fillRoundedRectangle (rOled, 6);
     drawReadout (g, rOled, true);
     g.setFont (font (9)); g.setColour (modern::dim());
     ltext (g, "QUELLE", presetX0, 306, 9);
-    ltext (g, "VERGLEICH", rA.getX(), 306, 9);
-    for (int i = 0; i < CS1Processor::numPresets; ++i)
-    {
-        auto r = presetRect (i);
-        drawRackOrPill (g, r.getX(), r.getY(), r.getWidth(), r.getHeight(), proc.presetName == CS1Processor::presetNames[i], CS1Processor::presetNames[i], true);
-    }
-    drawRackOrPill (g, rA.getX(), rA.getY(), rA.getWidth(), rA.getHeight(), proc.getSlot() == 0, "A", true);
-    drawRackOrPill (g, rB.getX(), rB.getY(), rB.getWidth(), rB.getHeight(), proc.getSlot() == 1, "B", true);
-    drawRackOrPill (g, rView.getX(), rView.getY(), rView.getWidth(), rView.getHeight(), false, "KONSOLE", true);
-
-    g.setFont (font (18)); g.setColour (modern::text()); ltext (g, "ONNO", 944, 304, 18);
-    g.setColour (modern::accent()); ltext (g, "CS-1", 944, 324, 18);
-
-    const bool byp = flag ("bypass");
-    auto br = juce::Rectangle<float> (rBypass.getX(), 316, rBypass.getWidth() + 12, 22).translated (-6, 0);
-    g.setColour (byp ? modern::warm() : (br.contains (mouseBase) ? rgb (56, 62, 75) : rgb (40, 45, 55)));
-    g.fillRoundedRectangle (br, 11);
-    g.setColour (byp ? modern::bg() : modern::dim()); g.setFont (font (10));
-    g.drawText ("BYPASS", br, juce::Justification::centred, false);
+    drawEqCurve (g, rEq);
 }

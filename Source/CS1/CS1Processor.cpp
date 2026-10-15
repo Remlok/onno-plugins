@@ -4,16 +4,8 @@
 using namespace onno::dsp;
 
 const char* const CS1Processor::presetNames[numPresets] = {
-    "KICK", "SNARE", "TOMS", "BASS", "RHY GTR", "LEAD GTR", "VOCAL", "SCREAM", "OVERHEAD", "BUS"
+    "Kick", "Snare", "Toms", "Bass", "Rhy Gtr", "Lead Gtr", "Vocal", "Scream", "Overhead", "Bus"
 };
-
-static juce::NormalisableRange<float> logRange (float lo, float hi)
-{
-    return { lo, hi,
-             [] (float a, float b, float n) { return a * std::exp (n * std::log (b / a)); },
-             [] (float a, float b, float v) { return std::log (v / a) / std::log (b / a); },
-             [] (float, float, float v) { return v; } };
-}
 
 juce::AudioProcessorValueTreeState::ParameterLayout CS1Processor::createLayout()
 {
@@ -25,7 +17,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout CS1Processor::createLayout()
         v.push_back (std::make_unique<F> (juce::ParameterID { id, 1 }, name, juce::NormalisableRange<float> (lo, hi), def, A().withLabel (unit)));
     };
     auto lg = [&] (const char* id, const char* name, float lo, float hi, float def, const char* unit) {
-        v.push_back (std::make_unique<F> (juce::ParameterID { id, 1 }, name, logRange (lo, hi), def, A().withLabel (unit)));
+        v.push_back (std::make_unique<F> (juce::ParameterID { id, 1 }, name, onno::logRange (lo, hi), def, A().withLabel (unit)));
     };
     auto bl = [&] (const char* id, const char* name, bool def) {
         v.push_back (std::make_unique<B> (juce::ParameterID { id, 1 }, name, def));
@@ -68,21 +60,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout CS1Processor::createLayout()
     return { v.begin(), v.end() };
 }
 
-CS1Processor::CS1Processor()
-    : AudioProcessor (BusesProperties().withInput ("Input", juce::AudioChannelSet::stereo(), true)
-                                       .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "CS1", createLayout())
+CS1Processor::CS1Processor() : ModernProcessor ("Onno CS-1", "CS1", stereoBuses(), createLayout())
 {
 }
 
-bool CS1Processor::isBusesLayoutSupported (const BusesLayout& l) const
-{
-    auto out = l.getMainOutputChannelSet();
-    return (out == juce::AudioChannelSet::mono() || out == juce::AudioChannelSet::stereo())
-        && l.getMainInputChannelSet() == out;
-}
-
-void CS1Processor::prepareToPlay (double sampleRate, int blockSize)
+void CS1Processor::prepare (double sampleRate, int blockSize)
 {
     sr = sampleRate;
     oversampling.reset();
@@ -134,22 +116,10 @@ float CS1Processor::eqResponseDb (float f) const
     return (float) sum;
 }
 
-static void atomicMax (std::atomic<float>& a, float v)
-{
-    float cur = a.load();
-    while (v > cur && ! a.compare_exchange_weak (cur, v)) {}
-}
-
-static void atomicMin (std::atomic<float>& a, float v)
-{
-    float cur = a.load();
-    while (v < cur && ! a.compare_exchange_weak (cur, v)) {}
-}
-
-void CS1Processor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
+void CS1Processor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
-    const int nch = std::min (2, buf.getNumChannels()), n = buf.getNumSamples();
+    const int nch = std::min (2, getMainBusNumInputChannels()), n = buf.getNumSamples();
     if (nch == 0 || n == 0) return;
     auto* L = buf.getWritePointer (0);
     auto* R = buf.getWritePointer (nch > 1 ? 1 : 0);
@@ -179,7 +149,7 @@ void CS1Processor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer
     {
         float pk = 0;
         for (int i = 0; i < n; ++i) pk = std::max (pk, std::max (std::abs (L[i]), std::abs (R[i])));
-        atomicMax (inPeak, pk); atomicMax (outPeak, pk);
+        onno::atomicMax (inPeak, pk); onno::atomicMax (outPeak, pk);
         return;
     }
 
@@ -192,7 +162,7 @@ void CS1Processor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer
     // Pegel nach dem Trim für Meter und Auto-Gain
     float inPk = 0;
     for (int i = 0; i < n; ++i) inPk = std::max (inPk, std::max (std::abs (L[i]), std::abs (R[i])));
-    atomicMax (inPeak, inPk);
+    onno::atomicMax (inPeak, inPk);
     // Auto-Gain: Lautheit des getrimmten Eingangs (Zeitkonstante 1,5 s)
     const bool autoGain = on ("autoGain");
     const float aMs = coef (1500.0f, sr), aSm = coef (50.0f, sr);
@@ -308,24 +278,14 @@ void CS1Processor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer
         outPk = std::max (outPk, std::max (std::abs (l), std::abs (r)));
     }
 
-    atomicMax (outPeak, outPk);
-    atomicMin (gateGr, gMin);
-    atomicMin (compGr, cMin);
-    atomicMin (dsGr, dMin);
+    onno::atomicMax (outPeak, outPk);
+    onno::atomicMin (gateGr, gMin);
+    onno::atomicMin (compGr, cMin);
+    onno::atomicMin (dsGr, dMin);
     autoGainDb = a2db (autoG);
 }
 
 // ----------------------------------------------------------------- Workflow
-void CS1Processor::setParam (const juce::String& id, float value)
-{
-    if (auto* prm = apvts.getParameter (id))
-    {
-        prm->beginChangeGesture();
-        prm->setValueNotifyingHost (prm->convertTo0to1 (value));
-        prm->endChangeGesture();
-    }
-}
-
 namespace
 {
 struct PV { const char* id; float v; };
@@ -374,87 +334,33 @@ const std::vector<PV> presets[CS1Processor::numPresets] = {
       { "compOn", 1 }, { "compThr", -14 }, { "compRatio", 2 }, { "compAtt", 30 }, { "compRel", 300 } },
 };
 
-// Diese Parameter bleiben beim Preset-Wechsel stehen: Pegelanpassung und Bedienung
-bool keepOnPreset (const juce::String& id)
-{
-    return id == "trim" || id == "out" || id == "autoGain" || id == "bypass" || id == "view";
-}
 }
 
-void CS1Processor::applyPreset (int index)
+std::vector<onno::ModernProcessor::FactoryPreset> CS1Processor::factoryPresets() const
 {
-    if (index < 0 || index >= numPresets) return;
-    for (auto* prm : getParameters())
-        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (prm))
-            if (! keepOnPreset (rp->getParameterID()) && std::abs (rp->getValue() - rp->getDefaultValue()) > 1.0e-6f)
-            {
-                rp->beginChangeGesture();
-                rp->setValueNotifyingHost (rp->getDefaultValue());
-                rp->endChangeGesture();
-            }
-    for (auto& pv : presets[index]) setParam (pv.id, pv.v);
-    presetName = presetNames[index];
-}
-
-void CS1Processor::selectSlot (int s)
-{
-    if (s == slot || s < 0 || s > 1) return;
-    const float view = p ("view");
-    slots[(size_t) slot] = apvts.copyState();
-    slots[(size_t) slot].setProperty ("preset", presetName, nullptr);
-    if (slots[(size_t) s].isValid())
+    std::vector<FactoryPreset> l;
+    for (int i = 0; i < numPresets; ++i)
     {
-        // Werte über die Parameter setzen, damit der Host die Änderung sieht
-        for (auto* prm : getParameters())
-            if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (prm))
-            {
-                auto child = slots[(size_t) s].getChildWithProperty ("id", rp->getParameterID());
-                if (child.isValid() && rp->getParameterID() != "view")
-                {
-                    rp->beginChangeGesture();
-                    rp->setValueNotifyingHost (rp->convertTo0to1 ((float) child.getProperty ("value")));
-                    rp->endChangeGesture();
-                }
-            }
-        presetName = slots[(size_t) s].getProperty ("preset").toString();
+        FactoryPreset f { presetNames[i], {} };
+        for (auto& pv : presets[i]) f.values.push_back ({ pv.id, pv.v });
+        l.push_back (std::move (f));
     }
-    slot = s;
-    setParam ("view", view);
+    return l;
+}
+
+// Zustände von vor der Suite: eigener A/B-Speicher und Preset-Name in Großbuchstaben
+void CS1Processor::migrateState (juce::ValueTree& st)
+{
+    st.removeChild (st.getChildWithName ("AB"), nullptr);
+    const auto old = st.getProperty ("preset").toString();
+    if (old.isNotEmpty())
+        for (auto* n : presetNames)
+            if (old.equalsIgnoreCase (n)) setPresetName (n);
+    st.removeProperty ("preset", nullptr);
+    st.removeProperty ("slot", nullptr);
 }
 
 juce::AudioProcessorEditor* CS1Processor::createEditor() { return new CS1Editor (*this); }
-
-void CS1Processor::getStateInformation (juce::MemoryBlock& dest)
-{
-    auto state = apvts.copyState();
-    state.setProperty ("preset", presetName, nullptr);
-    state.setProperty ("slot", slot, nullptr);
-    juce::ValueTree ab ("AB");
-    for (int i = 0; i < 2; ++i)
-        if (slots[(size_t) i].isValid() && i != slot)
-            ab.appendChild (slots[(size_t) i].createCopy().setProperty ("slotIndex", i, nullptr), nullptr);
-    state.removeChild (state.getChildWithName ("AB"), nullptr);
-    state.appendChild (ab, nullptr);
-    if (auto xml = state.createXml())
-        copyXmlToBinary (*xml, dest);
-}
-
-void CS1Processor::setStateInformation (const void* data, int size)
-{
-    if (auto xml = getXmlFromBinary (data, size))
-        if (xml->hasTagName (apvts.state.getType()))
-        {
-            auto state = juce::ValueTree::fromXml (*xml);
-            auto ab = state.getChildWithName ("AB");
-            slots = {};
-            for (auto child : ab)
-                slots[(size_t) (int) child.getProperty ("slotIndex")] = child.createCopy();
-            state.removeChild (ab, nullptr);
-            slot = state.getProperty ("slot", 0);
-            presetName = state.getProperty ("preset").toString();
-            apvts.replaceState (state);
-        }
-}
 
 #ifndef ONNO_TEST_BUILD
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new CS1Processor(); }

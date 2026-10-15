@@ -4,9 +4,9 @@ Eigene Audio-Plugins (VST3, auf dem Mac auch AU) mit C++ und JUCE 8. Sie laufen 
 
 | Plugin | Inhalt | Stand |
 |---|---|---|
-| Onno VC-1 | VCA-Kompressor, Ansichten Konsole und Modern | portiert vom JSFX, klanglich identisch, pluginval Stufe 7 bestanden |
-| Onno RV-1 | Algorithmischer Hall (Idee: Waves Atlas): 32 Programme in 8 Kategorien, Depth, Movement, Character, Ducking, Gated, Freeze | Nachhallzeit gemessen, alle Programme stabil, pluginval Stufe 7 bestanden |
-| Onno CS-1 | Channel Strip: Trim/Drive, HPF/LPF, Gate, 4-Band-EQ, Kompressor, De-Esser; Quell-Presets, Auto-Trim, Auto-Gain, A/B | 33 Messungen bestanden, pluginval Stufe 7 bestanden |
+| Onno VC-1 | VCA-Kompressor mit VU, Ansichten Konsole und Modern (Kennlinie, Verlauf), ANALOG-Leiste, 7 Metal-Werkspresets | portiert vom JSFX, klanglich identisch, pluginval Stufe 7 bestanden |
+| Onno RV-1 | Algorithmischer Hall (Idee: Waves Atlas): 32 Programme in 8 Kategorien (auch im Preset-Menü), Depth, Movement, Character, Ducking, Gated, Freeze | Nachhallzeit gemessen, alle Programme stabil, pluginval Stufe 7 bestanden |
+| Onno CS-1 | Channel Strip: Trim/Drive, HPF/LPF, Gate, 4-Band-EQ, Kompressor, De-Esser; Quell-Presets, Auto-Trim, Auto-Gain; Ansichten Konsole und Modern (mit EQ-Kurve) | 33 Messungen bestanden, pluginval Stufe 7 bestanden |
 
 ### Moderne Suite (Nachbauten der Reaper-Stock-Plugins)
 
@@ -27,6 +27,8 @@ Eigene Audio-Plugins (VST3, auf dem Mac auch AU) mit C++ und JUCE 8. Sie laufen 
 
 **Analoge Klangfarbe** (Leiste ANALOG unten in allen sechs): CLEAN (aus), BRIT (Übertrager, dichte Bässe, weiche Höhen), CONSOLE (sauber, ungerade Obertöne, etwas Glanz), TUBE (Röhre, warme geradzahlige Obertöne), FET (1176-artig, bissig, Präsenz). Die Sättigung läuft 4-fach überabgetastet (Spiegelfrequenzen bei 9 kHz und vollem Drive -76 bis -104 dBc statt -16 dBc). DRIVE bestimmt, wie stark gesättigt wird; bei 35 % liegt der Klirr bei -12 dBFS um 2-4 %, leise Signale bleiben im Pegel gleich. Im Delay läuft jede Wiederholung erneut durch die Sättigung wie bei einem Bandecho, im Limit sitzt sie vor dem Limiter.
 
+VC-1, CS-1 und RV-1 gehören ebenfalls zur Suite: gleiche Kopfzeile, Hilfe und Rückgängig wie alle anderen. Zusätzlich schalten KONSOLE / MODERN in der Kopfzeile zwischen dem Rack-Gerät und der modernen Ansicht um; Klang und Einstellungen bleiben dabei gleich. In der modernen Ansicht lassen sich alle Werte anklicken und eintippen. Alte Sessions laden unverändert (gleiche Parameter), die eigenen A/B-Tasten von CS-1 sind in die Kopfzeile gewandert.
+
 Alle sieben (EQ, Comp, Gate, Delay, MultiComp, Limit, Tame) teilen sich eine Oberfläche: oben die große Anzeige zum Anfassen, unten die Regler. Das Fenster lässt sich frei skalieren.
 
 **Kopfzeile, überall gleich:** Preset-Name mit Pfeilen (Klick auf den Namen: Init, Werks- und eigene Presets, „Speichern unter …“, Preset-Ordner öffnen) · A / B mit Kopieren (A>B) · Rückgängig / Wiederholen · MATCH · BYPASS.
@@ -38,16 +40,16 @@ Alle sieben (EQ, Comp, Gate, Delay, MultiComp, Limit, Tame) teilen sich eine Obe
 
 ## CS-1: schneller Workflow
 
-- **Quell-Presets** (KICK, SNARE, TOMS, BASS, RHY GTR, LEAD GTR, VOCAL, SCREAM, OVERHEAD, BUS): ein Klick setzt alle Module auf einen guten Startpunkt für Metal. Trim und Output bleiben dabei stehen.
+- **Quell-Presets** (KICK, SNARE, TOMS, BASS, RHY GTR, LEAD GTR, VOCAL, SCREAM, OVERHEAD, BUS): ein Klick setzt alle Module auf einen guten Startpunkt für Metal. Trim, Output und Auto Gain bleiben dabei stehen. Dieselben Presets stehen auch im Preset-Menü der Kopfzeile.
 - **AUTO TRIM**: anklicken, Spur abspielen. Nach 3 s Signal steht der Trim so, dass der Pegel bei -18 dBFS RMS liegt.
 - **AUTO GAIN**: gleicht die Lautheit am Ausgang an den Eingang an. So klingt eine Einstellung nicht nur besser, weil sie lauter ist.
-- **A / B**: zwei Einstellungen vergleichen. B startet als Kopie von A.
+- **A / B, Rückgängig, MATCH**: in der Kopfzeile wie bei allen Onno-Plugins.
 - Modul-Titel (GATE, EQ, COMP, DE-ESS) anklicken schaltet das Modul an oder aus. PRE EQ setzt den Kompressor vor den EQ.
-- Bei jedem Regler: ziehen (Shift = fein), Mausrad, Doppelklick = Standardwert. Das Display zeigt den genauen Wert.
+- Bei jedem Regler: ziehen (Shift = fein), Mausrad, Doppelklick = Standardwert. Das Display zeigt den genauen Wert, in der modernen Ansicht kann man ihn eintippen.
 
 ## RV-1: Hall
 
-- **Programme**: Kategorie anklicken (HALL, PLATE, ROOM, CHAMBER, AMBIENCE, CHORUS, GATED, BIG), dann mit PREV/NEXT, Klick ins Display oder Mausrad über dem Display weiterblättern. Mix, 100% WET und Freeze bleiben beim Blättern stehen, damit du direkt im Mix vergleichen kannst.
+- **Programme**: Kategorie anklicken (HALL, PLATE, ROOM, CHAMBER, AMBIENCE, CHORUS, GATED, BIG), dann mit PREV/NEXT, Klick ins Display oder Mausrad über dem Display weiterblättern. Die Programme sind zugleich die Werkspresets der Kopfzeile (nach Kategorie sortiert). Mix, 100% WET und Freeze bleiben beim Blättern stehen, damit du direkt im Mix vergleichen kannst.
 - **DEPTH**: nah (viele frühe Reflexionen, hell) bis fern (mehr Hallfahne, dunkler). **MOVEMENT**: Modulation der Fahne. **CHARACTER**: dunkel bis hell.
 - **DUCK**: Hall wird leiser, solange das Signal spielt, und blüht in den Pausen auf (gut für Vocals und Leads im dichten Metal-Mix).
 - **100% WET** für den Einsatz auf einem Send, **FREEZE** hält den Hall endlos stehen, **ALGORITHM** wechselt den Algorithmus bei gleichen Reglern.

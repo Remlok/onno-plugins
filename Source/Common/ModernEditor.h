@@ -96,6 +96,8 @@ struct MKnob
     std::function<String (float)> format;   // leer = Text des Parameters
     bool bipolar = false;                   // Bogen von der Mitte aus
     bool compact = false;                   // Beschriftung links, Wert rechts (kleine Regler in Leisten)
+    bool noValue = false;                   // kein Zahlenfeld (Konsolen-Regler mit Skala)
+    String help;                            // eigene Hilfe (leer = aus der Hilfetabelle nach Beschriftung)
 };
 
 struct MButton
@@ -108,6 +110,7 @@ struct MButton
     std::function<bool()> visible;          // leer = immer sichtbar
     String help;                            // Hilfe beim Darüberfahren (leer = aus der Hilfetabelle)
     std::function<void (Graphics&, juce::Rectangle<float>, Colour)> icon;   // statt Beschriftung
+    std::function<void (Graphics&, juce::Rectangle<float>, bool on, bool hover)> paint;   // eigener Look statt Pill (leer zeichnet nichts extra)
 };
 
 inline void drawPill (Graphics& g, juce::Rectangle<float> r, bool on, bool hover, const String& label, Colour c)
@@ -156,6 +159,8 @@ inline const std::map<String, String>& genericHelp()
         add ("PRESET", "Preset wählen, eigenes speichern oder den Preset-Ordner öffnen.");
         add ("PREV", "Vorheriges Preset.");
         add ("NEXT", "Nächstes Preset.");
+        add ("KONSOLE", "Ansicht wie ein Hardware-Gerät im Rack. Klang und Einstellungen bleiben gleich.");
+        add ("MODERN", "Moderne Ansicht mit großen Anzeigen; Werte lassen sich anklicken und eintippen.");
         add ("SIDECHAIN", "Der Detektor hört auf den Sidechain-Eingang statt auf die Spur selbst.");
         add ("DETEKTOR: MAIN", "Der Detektor hört auf die Spur selbst. Klicken = Sidechain-Eingang nutzen.");
         return h;
@@ -195,6 +200,7 @@ public:
 
     void paint (Graphics& g) override
     {
+        syncView();
         s = std::max (0.25f, std::min (getWidth() / W, getHeight() / H));
         ox = std::floor ((getWidth() - W * s) * 0.5f);
         oy = std::floor ((getHeight() - H * s) * 0.5f);
@@ -205,7 +211,14 @@ public:
         info.clear();
         drawBackground (g);
         if (analogStrip) drawAnalogStrip (g);
-        if (! display.isEmpty())
+        if (! display.isEmpty() && plainDisplay)
+        {
+            g.saveState();
+            g.reduceClipRegion (display.toNearestInt());
+            drawDisplay (g, display);
+            g.restoreState();
+        }
+        else if (! display.isEmpty())
         {
             g.setColour (mc::screen()); g.fillRoundedRectangle (display, 8);
             g.saveState();
@@ -220,6 +233,7 @@ public:
             if (! b.visible || b.visible())
             {
                 const bool on = b.on && b.on(), hv = b.r.contains (mouseBase);
+                if (b.paint) { b.paint (g, b.r, on, hv); continue; }
                 drawPill (g, b.r, on, hv, b.icon ? String() : b.label(), b.c);
                 if (b.icon) b.icon (g, b.r, on ? modern::bg() : (hv ? modern::text() : modern::dim()));
             }
@@ -241,6 +255,7 @@ public:
     // ------------------------------------------------------------ Maus
     void mouseMove (const juce::MouseEvent& e) override
     {
+        syncView();
         mouseBase = toBase (e.position);
         hot = hitKnob (mouseBase);
         if (display.contains (mouseBase)) displayMove (mouseBase);
@@ -259,6 +274,7 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        syncView();
         const auto b = toBase (e.position);
         tipShown = false; tipBlocked = true;
         if (valueEd.isVisible()) commitValue();
@@ -363,9 +379,12 @@ protected:
     virtual void displayDoubleClick (juce::Point<float>) {}
     virtual void displayWheel (juce::Point<float>, float, const juce::MouseEvent&) {}
     virtual void tick() {}
+    // Ansicht an den Parameter angleichen (Regler und Buttons neu anlegen); wird vor Zeichnen und Maus aufgerufen
+    virtual void syncView() {}
 
     void timerCallback() override
     {
+        syncView();
         tick();
         if (tipKey.isNotEmpty() && ! tipBlocked && drag < 0 && ! dragDisplay
             && juce::Time::getMillisecondCounter() - tipSince > 450)
@@ -441,7 +460,7 @@ protected:
         }
     }
 
-    void drawKnob (Graphics& g, int i)
+    virtual void drawKnob (Graphics& g, int i)
     {
         const auto& k = knobs[(size_t) i];
         auto* p = param (k.id);
@@ -500,9 +519,33 @@ protected:
     int hitValue (juce::Point<float> b) const
     {
         for (int i = 0; i < (int) knobs.size(); ++i)
-            if (valueRect (knobs[(size_t) i]).contains (b)) return i;
+            if (! knobs[(size_t) i].noValue && valueRect (knobs[(size_t) i]).contains (b)) return i;
         return -1;
     }
+
+    // Umschalter Konsole/Modern in der Kopfzeile (Parameter "view"); vor allen anderen Bedienelementen aufrufen
+    void enableViewSwitch()
+    {
+        buttons.clear();
+        viewSwitch = true;
+        addHeader();
+    }
+
+    // alle Regler und Buttons außer der Kopfzeile entfernen (Ansicht wechseln)
+    void clearControls()
+    {
+        if (valueEd.isVisible()) closeValue();
+        buttons.resize ((size_t) headerButtons);
+        knobs.clear();
+        display = {};
+        plainDisplay = false;
+        analogStrip = false;
+        hot = drag = -1;
+        dragDisplay = false;
+        tipKey.clear(); tipShown = false;
+    }
+
+    float scale() const { return s; }
 
     juce::Point<float> toBase (juce::Point<float> p) const { return { (p.x - ox) / s, (p.y - oy) / s }; }
 
@@ -513,6 +556,7 @@ protected:
     std::vector<MButton> buttons;
     std::map<String, String> help;          // Hilfe nach Beschriftung (Regler und Buttons), ergänzt genericHelp()
     juce::Rectangle<float> display;
+    bool plainDisplay = false;              // Display ohne eigenen Hintergrund und Rahmen (Konsole)
     juce::Point<float> mouseBase { -1000.0f, -1000.0f };
     int hot = -1, drag = -1;
 
@@ -544,6 +588,17 @@ private:
         x -= 4 + 26;
         buttons.push_back ({ { x, y, 26, h }, [] { return String ("A"); }, [this] { return base.slot() == 0; },
                              [this] { base.selectSlot (0); }, modern::accent() });
+        if (viewSwitch)
+        {
+            static const char* const views[] = { "KONSOLE", "MODERN" };
+            x -= 12 + 62;
+            for (int v = 1; v >= 0; --v)
+            {
+                buttons.push_back ({ { x, y, 62, h }, [v] { return String (views[v]); }, [this, v] { return (int) value ("view") == v; },
+                                     [this, v] { setValue ("view", (float) v); }, modern::dim() });
+                if (v == 1) x -= 2 + 62;
+            }
+        }
         const float right = x - 12;
         const float left = std::max (170.0f, 36 + font (18).getStringWidthFloat ("ONNO " + name) + 20);
         const float wName = juce::jlimit (90.0f, 260.0f, right - left - 52);
@@ -592,7 +647,19 @@ private:
         if (nf > 0)
         {
             m.addSectionHeader ("Werk");
-            for (int i = 1; i <= nf; ++i) m.addItem (1 + i, names[i], true, cur == i);
+            const auto fac = base.factoryPresets();
+            juce::StringArray cats;
+            for (auto& f : fac) if (f.category.isNotEmpty()) cats.addIfNotAlreadyThere (f.category);
+            for (int i = 1; i <= nf; ++i)
+                if (fac[(size_t) i - 1].category.isEmpty()) m.addItem (1 + i, names[i], true, cur == i);
+            for (auto& c : cats)
+            {
+                juce::PopupMenu sub;
+                bool has = false;
+                for (int i = 1; i <= nf; ++i)
+                    if (fac[(size_t) i - 1].category == c) { sub.addItem (1 + i, names[i], true, cur == i); has = has || cur == i; }
+                m.addSubMenu (c, sub, true, nullptr, has);
+            }
         }
         if (names.size() > nf + 1)
         {
@@ -731,9 +798,10 @@ private:
             if (! juce::isPositiveAndBelow (idx, (int) knobs.size())) return;
             const auto& k = knobs[(size_t) idx];
             title = k.label;
-            body = helpFor (k.label);
+            body = k.help.isNotEmpty() ? k.help : helpFor (k.label);
             hint = String::fromUTF8 (tipKey[0] == 'v' ? "Klicken = Wert eintippen (z. B. 2k, -3, 250 ms)"
-                                                      : "Ziehen, Shift = fein, Doppelklick = Standard, Wert anklicken = eintippen");
+                                     : (k.noValue ? "Ziehen, Shift = fein, Mausrad, Doppelklick = Standard"
+                                                  : "Ziehen, Shift = fein, Doppelklick = Standard, Wert anklicken = eintippen"));
             anchor = k.compact ? juce::Rectangle<float> (k.cx - k.r, k.cy - k.r, 2 * k.r, 2 * k.r)
                                : juce::Rectangle<float> (k.cx - k.r, k.cy - k.r - 16, 2 * k.r, 2 * k.r + 36);
         }
@@ -782,6 +850,7 @@ private:
     float dragNorm = 0.0f, lastY = 0.0f;
     bool dragDisplay = false;
     bool analogStrip = false;
+    bool viewSwitch = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ModernEditor)
 };

@@ -1,5 +1,5 @@
 #pragma once
-#include <juce_audio_processors/juce_audio_processors.h>
+#include "Common/ModernProcessor.h"
 #include "Common/OnnoDSP.h"
 #include <atomic>
 #include <array>
@@ -7,34 +7,12 @@
 // Onno RV-1: algorithmischer Hall (8-Kanal-Feedback-Delay-Netz) mit Programm-Browser
 // Kette (Hallanteil): Pre-Delay → Early Reflections + Diffusion → FDN mit Modulation und Dämpfung
 //                     → Gate (Gated-Programme) → Ducking → Low/High Cut → Breite → Mix
-class RV1Processor : public juce::AudioProcessor
+class RV1Processor : public onno::ModernProcessor
 {
 public:
     RV1Processor();
 
-    void prepareToPlay (double sampleRate, int blockSize) override;
-    void releaseResources() override {}
-    bool isBusesLayoutSupported (const BusesLayout&) const override;
-    void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
-
     juce::AudioProcessorEditor* createEditor() override;
-    bool hasEditor() const override { return true; }
-
-    const juce::String getName() const override { return "Onno RV-1"; }
-    bool acceptsMidi() const override { return false; }
-    bool producesMidi() const override { return false; }
-    double getTailLengthSeconds() const override { return 20.0; }
-
-    int getNumPrograms() override { return 1; }
-    int getCurrentProgram() override { return 0; }
-    void setCurrentProgram (int) override {}
-    const juce::String getProgramName (int) override { return {}; }
-    void changeProgramName (int, const juce::String&) override {}
-
-    void getStateInformation (juce::MemoryBlock&) override;
-    void setStateInformation (const void*, int) override;
-
-    juce::AudioProcessorValueTreeState apvts;
 
     // --- Algorithmen und Programme ---
     enum Algo { hall, plate, room, chamber, ambience, chorus, gated, numAlgos };
@@ -48,13 +26,22 @@ public:
         float predelay, decay, size, depth, movement, character, width, duck, lowCut, highCut;
     };
     static const std::vector<Program>& programs();
-    void loadProgram (int index);                      // nur Message-Thread; Mix, 100 % Wet und Bypass bleiben
+    // Programme sind die Werkspresets 1..32 der gemeinsamen Preset-Liste; Mix, 100 % Wet und Freeze bleiben stehen
+    std::vector<FactoryPreset> factoryPresets() const override;
+    bool keepOnPreset (const juce::String& id) const override { return id == "mix" || id == "send" || id == "freeze"; }
+    void loadProgram (int index);                      // nur Message-Thread
     int currentProgram() const { return (int) apvts.getRawParameterValue ("program")->load(); }
+    // Index des geladenen Werkspresets (0..31) oder -1 bei Init/eigenen Presets
+    int factoryProgram() const;
     static int firstOfCategory (int cat);
-    void setParam (const juce::String& id, float value);
 
-    // Anzeige
-    std::atomic<float> inPeak { 0 }, wetPeak { 0 }, duckDb { 0 };
+    // Anzeige (Eingang: inPeak der Basis)
+    std::atomic<float> wetPeak { 0 }, duckDb { 0 };
+
+protected:
+    void prepare (double sampleRate, int blockSize) override;
+    void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    void migrateState (juce::ValueTree&) override;
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();

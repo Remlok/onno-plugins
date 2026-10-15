@@ -78,13 +78,6 @@ const Tap erTaps[2][8] = {
     { { 5.9f, -0.81f }, { 11.2f, 0.69f }, { 17.8f, -0.60f }, { 24.6f, 0.51f }, { 32.7f, -0.43f }, { 41.9f, 0.35f }, { 52.3f, -0.28f }, { 63.1f, 0.22f } },
 };
 
-juce::NormalisableRange<float> logRange (float lo, float hi)
-{
-    return { lo, hi,
-             [] (float a, float b, float n) { return a * std::exp (n * std::log (b / a)); },
-             [] (float a, float b, float v) { return std::log (v / a) / std::log (b / a); },
-             [] (float, float, float v) { return v; } };
-}
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout RV1Processor::createLayout()
@@ -97,15 +90,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout RV1Processor::createLayout()
     };
     juce::NormalisableRange<float> pd (0, 250); pd.setSkewForCentre (60);
     add ("predelay", "Pre-Delay", pd, 30, "ms");
-    add ("decay", "Decay", logRange (0.2f, 20), 2.4f, "s");
+    add ("decay", "Decay", onno::logRange (0.2f, 20), 2.4f, "s");
     add ("size", "Size", { 0, 100 }, 60, "%");
     add ("depth", "Depth", { 0, 100 }, 55, "%");
     add ("movement", "Movement", { 0, 100 }, 30, "%");
     add ("character", "Character", { 0, 100 }, 50, "");
     add ("width", "Width", { 0, 150 }, 100, "%");
     add ("duck", "Duck", { 0, 100 }, 0, "%");
-    add ("lowCut", "Low Cut", logRange (20, 1000), 80, "Hz");
-    add ("highCut", "High Cut", logRange (1000, 20000), 12000, "Hz");
+    add ("lowCut", "Low Cut", onno::logRange (20, 1000), 80, "Hz");
+    add ("highCut", "High Cut", onno::logRange (1000, 20000), 12000, "Hz");
     add ("mix", "Mix", { 0, 100 }, 30, "%");
     v.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "send", 1 }, "100% Wet", false));
     v.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "freeze", 1 }, "Freeze", false));
@@ -119,21 +112,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout RV1Processor::createLayout()
     return { v.begin(), v.end() };
 }
 
-RV1Processor::RV1Processor()
-    : AudioProcessor (BusesProperties().withInput ("Input", juce::AudioChannelSet::stereo(), true)
-                                       .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "RV1", createLayout())
+RV1Processor::RV1Processor() : ModernProcessor ("Onno RV-1", "RV1", stereoBuses(), createLayout(), 20.0)
 {
 }
 
-bool RV1Processor::isBusesLayoutSupported (const BusesLayout& l) const
-{
-    auto out = l.getMainOutputChannelSet();
-    return (out == juce::AudioChannelSet::mono() || out == juce::AudioChannelSet::stereo())
-        && l.getMainInputChannelSet() == out;
-}
-
-void RV1Processor::prepareToPlay (double sampleRate, int)
+void RV1Processor::prepare (double sampleRate, int)
 {
     sr = sampleRate;
     for (auto& l : pre) l.init ((int) (0.45 * sr) + 4);
@@ -146,20 +129,17 @@ void RV1Processor::prepareToPlay (double sampleRate, int)
     duckEnv = gateEnv = -120; gateGain = 0; gateTimer = 0;
 }
 
-void RV1Processor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
+void RV1Processor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
-    const int nch = std::min (2, buf.getNumChannels()), n = buf.getNumSamples();
+    const int nch = std::min (2, getMainBusNumInputChannels()), n = buf.getNumSamples();
     if (nch == 0 || n == 0) return;
     auto* L = buf.getWritePointer (0);
     auto* R = buf.getWritePointer (nch > 1 ? 1 : 0);
 
     float inPk = 0;
     for (int i = 0; i < n; ++i) inPk = std::max (inPk, std::max (std::abs (L[i]), std::abs (R[i])));
-    {
-        float cur = inPeak.load();
-        while (inPk > cur && ! inPeak.compare_exchange_weak (cur, inPk)) {}
-    }
+    onno::atomicMax (inPeak, inPk);
     if (on ("bypass")) return;
 
     const auto& ad = algos[juce::jlimit (0, numAlgos - 1, (int) p ("algo"))];
@@ -281,58 +261,54 @@ void RV1Processor::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer
         if (nch > 1) R[i] = xr * dryG + wr * mix;
     }
 
-    {
-        float cur = wetPeak.load();
-        while (wetPk > cur && ! wetPeak.compare_exchange_weak (cur, wetPk)) {}
-    }
+    onno::atomicMax (wetPeak, wetPk);
     duckDb = duckMin;
 }
 
 // ----------------------------------------------------------------- Programme
-void RV1Processor::setParam (const juce::String& id, float value)
+std::vector<onno::ModernProcessor::FactoryPreset> RV1Processor::factoryPresets() const
 {
-    if (auto* prm = apvts.getParameter (id))
+    std::vector<FactoryPreset> l;
+    const auto& progs = programs();
+    for (int i = 0; i < (int) progs.size(); ++i)
     {
-        prm->beginChangeGesture();
-        prm->setValueNotifyingHost (prm->convertTo0to1 (value));
-        prm->endChangeGesture();
+        const auto& pr = progs[(size_t) i];
+        l.push_back ({ pr.name,
+                       { { "program", (float) i }, { "algo", (float) pr.algo }, { "predelay", pr.predelay }, { "decay", pr.decay },
+                         { "size", pr.size }, { "depth", pr.depth }, { "movement", pr.movement }, { "character", pr.character },
+                         { "width", pr.width }, { "duck", pr.duck }, { "lowCut", pr.lowCut }, { "highCut", pr.highCut } },
+                       juce::String (categoryNames[pr.category]) });
     }
+    return l;
 }
 
-// Mix, 100 % Wet, Freeze und Bypass bleiben beim Programmwechsel stehen
 void RV1Processor::loadProgram (int index)
 {
+    const int n = (int) programs().size();
+    loadPreset (1 + (index % n + n) % n);
+}
+
+int RV1Processor::factoryProgram() const
+{
     const auto& l = programs();
-    index = (index % (int) l.size() + (int) l.size()) % (int) l.size();
-    const auto& pr = l[(size_t) index];
-    setParam ("program", (float) index);
-    setParam ("algo", (float) pr.algo);
-    setParam ("predelay", pr.predelay);
-    setParam ("decay", pr.decay);
-    setParam ("size", pr.size);
-    setParam ("depth", pr.depth);
-    setParam ("movement", pr.movement);
-    setParam ("character", pr.character);
-    setParam ("width", pr.width);
-    setParam ("duck", pr.duck);
-    setParam ("lowCut", pr.lowCut);
-    setParam ("highCut", pr.highCut);
+    for (int i = 0; i < (int) l.size(); ++i)
+        if (presetName == l[(size_t) i].name) return i;
+    return -1;
+}
+
+// Zustände von vor der Suite: Programmname aus dem Programm-Parameter übernehmen
+void RV1Processor::migrateState (juce::ValueTree& st)
+{
+    if (presetName != "Init") return;
+    for (auto c : st)
+        if (c.getProperty ("id").toString() == "program")
+        {
+            const int i = juce::jlimit (0, (int) programs().size() - 1, (int) c.getProperty ("value"));
+            if (i > 0) setPresetName (programs()[(size_t) i].name);
+        }
 }
 
 juce::AudioProcessorEditor* RV1Processor::createEditor() { return new RV1Editor (*this); }
-
-void RV1Processor::getStateInformation (juce::MemoryBlock& dest)
-{
-    if (auto xml = apvts.copyState().createXml())
-        copyXmlToBinary (*xml, dest);
-}
-
-void RV1Processor::setStateInformation (const void* data, int size)
-{
-    if (auto xml = getXmlFromBinary (data, size))
-        if (xml->hasTagName (apvts.state.getType()))
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
-}
 
 #ifndef ONNO_TEST_BUILD
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new RV1Processor(); }
