@@ -93,6 +93,43 @@ target_link_libraries(OnnoRV1
     PRIVATE juce::juce_audio_utils juce::juce_dsp
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_lto_flags juce::juce_recommended_warning_flags)
 
+# --- Moderne Suite (Nachbauten der ReaPlugs) ---
+function(onno_modern_plugin target product code categories)
+    juce_add_plugin(${target}
+        COMPANY_NAME "Onno"
+        PLUGIN_MANUFACTURER_CODE Onno
+        PLUGIN_CODE ${code}
+        FORMATS VST3 AU
+        PRODUCT_NAME "${product}"
+        IS_SYNTH FALSE
+        NEEDS_MIDI_INPUT FALSE
+        VST3_CATEGORIES ${categories}
+        AU_MAIN_TYPE kAudioUnitType_Effect
+        COPY_PLUGIN_AFTER_BUILD FALSE)
+    target_sources(${target} PRIVATE ${ARGN})
+    target_include_directories(${target} PRIVATE Source)
+    target_compile_definitions(${target} PUBLIC
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
+        JUCE_DISPLAY_SPLASH_SCREEN=0)
+    target_link_libraries(${target}
+        PRIVATE juce::juce_audio_utils juce::juce_dsp
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_lto_flags juce::juce_recommended_warning_flags)
+endfunction()
+
+set(ONNO_SUITE_SOURCES
+    Source/EQ/OnnoEQ.cpp
+    Source/Comp/OnnoComp.cpp
+    Source/Gate/OnnoGate.cpp
+    Source/Delay/OnnoDelay.cpp
+    Source/MultiComp/OnnoMultiComp.cpp
+    Source/Limit/OnnoLimit.cpp)
+onno_modern_plugin(OnnoEQ "Onno EQ" Oeq1 "Fx;EQ" Source/EQ/OnnoEQ.cpp)
+onno_modern_plugin(OnnoComp "Onno Comp" Ocp1 "Fx;Dynamics" Source/Comp/OnnoComp.cpp)
+onno_modern_plugin(OnnoGate "Onno Gate" Ogt1 "Fx;Dynamics" Source/Gate/OnnoGate.cpp)
+onno_modern_plugin(OnnoDelay "Onno Delay" Odl1 "Fx;Delay" Source/Delay/OnnoDelay.cpp)
+onno_modern_plugin(OnnoMultiComp "Onno MultiComp" Omc1 "Fx;Dynamics" Source/MultiComp/OnnoMultiComp.cpp)
+onno_modern_plugin(OnnoLimit "Onno Limit" Olm1 "Fx;Dynamics" Source/Limit/OnnoLimit.cpp)
+
 if(ONNO_TESTS)
     juce_add_console_app(OnnoTests PRODUCT_NAME "OnnoTests")
     target_sources(OnnoTests PRIVATE
@@ -102,7 +139,8 @@ if(ONNO_TESTS)
         Source/CS1/CS1Processor.cpp
         Source/CS1/CS1Editor.cpp
         Source/RV1/RV1Processor.cpp
-        Source/RV1/RV1Editor.cpp)
+        Source/RV1/RV1Editor.cpp
+        ${ONNO_SUITE_SOURCES})
     target_include_directories(OnnoTests PRIVATE Source)
     target_compile_definitions(OnnoTests PRIVATE
         JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 ONNO_TEST_BUILD=1)

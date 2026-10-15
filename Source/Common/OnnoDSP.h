@@ -67,6 +67,27 @@ struct Biquad
         set ((1 - c) / 2, 1 - c, (1 - c) / 2, 1 + al, -2 * c, 1 - al);
     }
 
+    // Bandpass mit 0 dB in der Mitte
+    void bandPass (double sr, double f, double q)
+    {
+        const double w = twoPi * f / sr, al = std::sin (w) / (2 * q), c = std::cos (w);
+        set (al, 0, -al, 1 + al, -2 * c, 1 - al);
+    }
+
+    void notch (double sr, double f, double q)
+    {
+        const double w = twoPi * f / sr, al = std::sin (w) / (2 * q), c = std::cos (w);
+        set (1, -2 * c, 1, 1 + al, -2 * c, 1 - al);
+    }
+
+    void allPass (double sr, double f, double q)
+    {
+        const double w = twoPi * f / sr, al = std::sin (w) / (2 * q), c = std::cos (w);
+        set (1 - al, -2 * c, 1 + al, 1 + al, -2 * c, 1 - al);
+    }
+
+    void identity() { set (1, 0, 0, 1, 0, 0); }
+
     // Hochpass erster Ordnung (bilinear)
     void highPass1 (double sr, double f)
     {

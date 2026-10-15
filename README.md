@@ -8,6 +8,19 @@ Eigene Audio-Plugins (VST3, auf dem Mac auch AU) mit C++ und JUCE 8. Sie laufen 
 | Onno RV-1 | Algorithmischer Hall (Idee: Waves Atlas): 32 Programme in 8 Kategorien, Depth, Movement, Character, Ducking, Gated, Freeze | Nachhallzeit gemessen, alle Programme stabil, pluginval Stufe 7 bestanden |
 | Onno CS-1 | Channel Strip: Trim/Drive, HPF/LPF, Gate, 4-Band-EQ, Kompressor, De-Esser; Quell-Presets, Auto-Trim, Auto-Gain, A/B | 33 Messungen bestanden, pluginval Stufe 7 bestanden |
 
+### Moderne Suite (Nachbauten der Reaper-Stock-Plugins)
+
+| Plugin | Vorbild | Inhalt |
+|---|---|---|
+| Onno EQ | ReaEQ | 8 Bänder (Low/High Cut 12/24/48 dB, Shelf, Bell, Notch, Band Pass), Kurve mit ziehbaren Knoten, Analyzer Pre/Post |
+| Onno Comp | ReaComp | Threshold, Ratio bis unendlich, Knee, Attack, Release, Lookahead, RMS, Detektor-HPF, Sidechain, Mix, Auto Gain, Limit 0 dB; Kennlinie und Verlauf |
+| Onno Gate | ReaGate | Threshold mit Hysterese, Attack, Hold, Release, Range, Lookahead, Detektor-HPF/LPF, Sidechain, Listen |
+| Onno Delay | ReaDelay | 3 Taps mit Sync oder ms, Feedback, Pegel, Pan, Low/High Cut im Feedback, Ping-Pong; Dry/Wet, Ducking; Taps im Display ziehbar |
+| Onno MultiComp | ReaXcomp | 4 Bänder mit Linkwitz-Riley-Weichen (Summe flach), je Band Threshold/Ratio/Attack/Release/Gain, Solo, Band aus; Analyzer und Gain Reduction pro Band |
+| Onno Limit | ReaLimit | Brickwall mit 1,5 ms Lookahead: Threshold, Ceiling, Release; keine Spitze über der Ceiling |
+
+Alle sechs teilen sich eine Oberfläche: oben die große Anzeige zum Anfassen, unten die Regler. Ziehen (Shift = fein), Mausrad und Doppelklick (Standardwert) funktionieren überall gleich. Das Fenster lässt sich frei skalieren.
+
 ## CS-1: schneller Workflow
 
 - **Quell-Presets** (KICK, SNARE, TOMS, BASS, RHY GTR, LEAD GTR, VOCAL, SCREAM, OVERHEAD, BUS): ein Klick setzt alle Module auf einen guten Startpunkt für Metal. Trim und Output bleiben dabei stehen.
@@ -29,8 +42,10 @@ Eigene Audio-Plugins (VST3, auf dem Mac auch AU) mit C++ und JUCE 8. Sie laufen 
 
 - `Source/Common/OnnoLook.h`: gemeinsamer Look (3D-Regler, Chrom-Schalter, Frontplatte, Modern-Teile). Jedes neue Plugin nutzt ihn.
 - `Source/Common/OnnoDSP.h`: gemeinsame Filter (Biquads).
+- `Source/Common/ModernProcessor.h`, `ModernEditor.h`, `Analyzer.h`: Grundgerüst der modernen Suite (Parameter, Zustand, Sidechain, Regler, Anzeige, Spektrum).
 - `Source/VC1/`, `Source/CS1/`, `Source/RV1/`: Prozessor (Klang) und Editor (Oberfläche) je Plugin.
-- `Tests/Tests.cpp`: misst den Klang und rendert die Oberfläche als PNG, ohne DAW.
+- `Source/EQ/`, `Comp/`, `Gate/`, `Delay/`, `MultiComp/`, `Limit/`: die moderne Suite, je Plugin eine Datei.
+- `Tests/Tests.cpp`: misst den Klang und rendert die Oberfläche als PNG, ohne DAW (`OnnoTests <Ordner> [EQ Comp ...]`).
 - `.github/workflows/build.yml`: baut auf GitHub automatisch die Windows- und Mac-Version und prüft sie mit pluginval.
 
 ## Bauen
@@ -53,7 +68,9 @@ JUCE wird dabei automatisch geladen. Die fertigen Dateien liegen in `build/<Plug
 - In Reaper: *Options → Preferences → Plug-ins → VST → Re-scan*.
 
 Auf dem Mac sind die Plugins nicht signiert. Beim ersten Laden kann macOS sie blockieren; dann einmal im Terminal ausführen:
-`xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/"Onno VC-1.vst3"`
+`xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Onno*.vst3`
+
+Sidechain (Onno Comp, Onno Gate) in Reaper: Spur mit dem Plugin auf 4 Kanäle stellen, das Signal per Send auf Kanal 3/4 schicken und im Plugin DETEKTOR auf SIDECHAIN stellen.
 
 ## Lizenz
 

@@ -1,0 +1,62 @@
+#pragma once
+// Onno MultiComp: 4-Band-Kompressor im Stil von ReaXcomp (Linkwitz-Riley-Weichen, Solo, Analyzer)
+#include "Common/ModernProcessor.h"
+#include "Common/ModernEditor.h"
+#include "Common/Analyzer.h"
+#include "Common/OnnoDSP.h"
+
+class MultiCompProcessor : public onno::ModernProcessor
+{
+public:
+    static constexpr int numBands = 4;
+    static const char* const bandNames[numBands];
+
+    MultiCompProcessor();
+    void prepareToPlay (double sampleRate, int) override;
+    void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    juce::AudioProcessorEditor* createEditor() override;
+
+    static juce::String id (int b, const char* p) { return "b" + juce::String (b + 1) + p; }
+    // Weichenfrequenzen mit Mindestabstand
+    void crossovers (float& x1, float& x2, float& x3) const;
+
+    std::array<std::atomic<float>, numBands> bandGr;
+    onno::Analyzer analyzer;
+
+private:
+    static juce::AudioProcessorValueTreeState::ParameterLayout layout();
+    enum { pThr, pRatio, pAtt, pRel, pGain, pSolo, pByp, numP };
+    std::array<std::array<std::atomic<float>*, numP>, numBands> bp {};
+    std::atomic<float> *pX1, *pX2, *pX3, *pMix, *pOut, *pBypass;
+    double sr = 48000;
+    float fx1 = -1, fx2 = -1, fx3 = -1;
+    // Weichen: LR4 = zwei Butterworth-Stufen
+    onno::dsp::Biquad lp2[2], hp2[2], ap3, lp1[2], hp1[2], ap1, lp3[2], hp3[2];
+    std::array<float, numBands> env {};
+    std::array<juce::SmoothedValue<float>, numBands> makeup;
+    juce::SmoothedValue<float> outS, mixS;
+};
+
+class MultiCompEditor : public onno::ModernEditor
+{
+public:
+    explicit MultiCompEditor (MultiCompProcessor&);
+
+private:
+    void selectBand (int b);
+    void drawBackground (juce::Graphics&) override;
+    void drawDisplay (juce::Graphics&, juce::Rectangle<float>) override;
+    void drawOverlay (juce::Graphics&) override;
+    void displayMove (juce::Point<float>) override;
+    bool displayDown (juce::Point<float>, const juce::MouseEvent&) override;
+    void displayDrag (juce::Point<float>, const juce::MouseEvent&) override;
+    void displayUp (juce::Point<float>) override;
+    void tick() override;
+
+    int hitXover (juce::Point<float>) const;
+    float xoverX (int k) const;
+
+    MultiCompProcessor& proc;
+    int sel = 0, hoverX = -1, dragX = -1;
+    std::array<float, MultiCompProcessor::numBands> gr {};
+};

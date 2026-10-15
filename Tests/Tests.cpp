@@ -6,6 +6,12 @@
 #include "CS1/CS1Editor.h"
 #include "RV1/RV1Processor.h"
 #include "RV1/RV1Editor.h"
+#include "EQ/OnnoEQ.h"
+#include "Comp/OnnoComp.h"
+#include "Gate/OnnoGate.h"
+#include "Delay/OnnoDelay.h"
+#include "MultiComp/OnnoMultiComp.h"
+#include "Limit/OnnoLimit.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <cstdio>
 #include <functional>
@@ -63,7 +69,8 @@ static void check (const char* what, float got, float want, float tol)
 }
 
 template <typename Proc, typename Ed>
-static void render (const juce::File& dir, const juce::String& name, int w, int h, std::function<void (Proc&)> setup, int hot)
+static void render (const juce::File& dir, const juce::String& name, int w, int h, std::function<void (Proc&)> setup, int hot,
+                    int frames = 40, bool pulsed = false)
 {
     Proc p;
     p.prepareToPlay (48000, 512);
@@ -75,9 +82,12 @@ static void render (const juce::File& dir, const juce::String& name, int w, int 
     juce::MidiBuffer m;
     juce::Random rnd (2);
     long t = 0;
-    for (int f = 0; f < 40; ++f)
+    for (int f = 0; f < frames; ++f)
     {
-        for (int k = 0; k < 4; ++k) { fill (b, t, 220, 0.35f, 0.05f, rnd); p.processBlock (b, m); }
+        // gepulst: Schläge im Achtel-Raster mit leisen Pausen (wie Drums)
+        const float amp = pulsed ? (f % 24 < 3 ? 0.6f : (f % 24 < 10 ? 0.12f : 0.004f)) : 0.35f;
+        const float nz = pulsed ? amp * 0.4f : 0.05f;
+        for (int k = 0; k < 4; ++k) { fill (b, t, 220, amp, nz, rnd); p.processBlock (b, m); }
         e->tickMeters();
     }
     e->setHot (hot);
@@ -347,13 +357,219 @@ static void testRV1 (const juce::File& dir)
     render<RV1Processor, RV1Editor> (dir, "rv1-modern.png", 1000, 340, F ([] (RV1Processor& p) { p.loadProgram (28); setParam (p.apvts, "view", 1); }), -1);
 }
 
+static void testEQ (const juce::File& dir)
+{
+    std::puts ("--- Onno EQ ---");
+    using F = std::function<void (EQProcessor&)>;
+    auto at = [] (float f, F s) { return measure<EQProcessor> (f, 0.25f, s); };
+    auto none = F ([] (EQProcessor&) {});
+    for (float f : { 50.0f, 1000.0f, 10000.0f })
+        check (("neutral " + juce::String (f) + " Hz").toRawUTF8(), at (f, none), 0.0f, 0.02f);
+    auto bell = F ([] (EQProcessor& p) { setParam (p.apvts, "b4gain", 6); setParam (p.apvts, "b4freq", 1000); });
+    check ("Bell +6 dB bei 1 kHz", at (1000, bell), 6.0f, 0.05f);
+    check ("Bell +6 dB, 100 Hz bleibt", at (100, bell), 0.0f, 0.2f);
+    auto ls = F ([] (EQProcessor& p) { setParam (p.apvts, "b2gain", -6); });
+    check ("Low Shelf -6 dB bei 30 Hz", at (30, ls), -6.0f, 0.3f);
+    auto lc = F ([] (EQProcessor& p) { setParam (p.apvts, "b1on", 1); setParam (p.apvts, "b1freq", 100); setParam (p.apvts, "b1slope", 2); });
+    check ("Low Cut 100 Hz 48 dB/Okt: -3 dB bei 100 Hz", at (100, lc), -3.0f, 0.2f);
+    check ("Low Cut 100 Hz 48 dB/Okt: 50 Hz", at (50, lc), -48.2f, 1.0f);
+    auto lc12 = F ([] (EQProcessor& p) { setParam (p.apvts, "b1on", 1); setParam (p.apvts, "b1freq", 100); setParam (p.apvts, "b1slope", 0); });
+    check ("Low Cut 100 Hz 12 dB/Okt: 50 Hz", at (50, lc12), -12.3f, 0.5f);
+    auto nt = F ([] (EQProcessor& p) { setParam (p.apvts, "b8on", 1); setParam (p.apvts, "b8type", 3); setParam (p.apvts, "b8freq", 1000); setParam (p.apvts, "b8q", 4); });
+    check ("Notch 1 kHz", at (1000, nt), -60.0f, 30.0f);
+    auto out = F ([] (EQProcessor& p) { setParam (p.apvts, "output", -3); });
+    check ("Output -3 dB", at (1000, out), -3.0f, 0.02f);
+
+    auto look = [] (EQProcessor& p) {
+        setParam (p.apvts, "b1on", 1); setParam (p.apvts, "b1freq", 40); setParam (p.apvts, "b2gain", 2.5f);
+        setParam (p.apvts, "b3freq", 320); setParam (p.apvts, "b3gain", -4); setParam (p.apvts, "b3q", 1.8f);
+        setParam (p.apvts, "b4gain", 3); setParam (p.apvts, "b4freq", 2800); setParam (p.apvts, "b5gain", -2); setParam (p.apvts, "b5freq", 5200); setParam (p.apvts, "b5q", 5);
+        setParam (p.apvts, "b6gain", 3.5f); setParam (p.apvts, "b6freq", 10000);
+    };
+    render<EQProcessor, EQEditor> (dir, "onno-eq.png", 900, 430, look, -1);
+    render<EQProcessor, EQEditor> (dir, "onno-eq-hover.png", 900, 430, look, 1);
+}
+
+static void checkBool (const char* what, bool ok)
+{
+    if (! ok) ++failures;
+    std::printf ("%s %s\n", ok ? "OK  " : "FEHL", what);
+}
+
+static void testComp (const juce::File& dir)
+{
+    std::puts ("--- Onno Comp ---");
+    using F = std::function<void (CompProcessor&)>;
+    check ("-30 dBFS unter Threshold", measure<CompProcessor> (1000, 0.0316f, F ([] (CompProcessor&) {})), 0.0f, 0.05f);
+    const float gr = measure<CompProcessor> (1000, 0.5f, F ([] (CompProcessor&) {}));
+    check ("-6 dBFS, Thr -18, 4:1 (statisch -9.0)", gr, -8.6f, 0.8f);
+    check ("Mix 0 % = trocken", measure<CompProcessor> (1000, 0.5f, F ([] (CompProcessor& p) { setParam (p.apvts, "mix", 0); })), 0.0f, 0.05f);
+    check ("Auto Gain hebt an", measure<CompProcessor> (1000, 0.5f, F ([] (CompProcessor& p) { setParam (p.apvts, "autoGain", 1); })), gr + 6.75f, 0.1f);
+    check ("Detektor-HPF 500 Hz: 60 Hz kaum komprimiert", measure<CompProcessor> (60, 0.5f, F ([] (CompProcessor& p) { setParam (p.apvts, "scHpf", 500); })), -0.5f, 0.6f);
+
+    {   // Lookahead meldet Latenz
+        CompProcessor p; p.prepareToPlay (48000, 512);
+        setParam (p.apvts, "lookahead", 5);
+        juce::AudioBuffer<float> b (2, 512); b.clear(); juce::MidiBuffer m;
+        p.processBlock (b, m);
+        checkBool ("Lookahead 5 ms = 240 Samples Latenz", p.getLatencySamples() == 240);
+    }
+    {   // echter Sidechain: Hauptsignal leise, Sidechain laut
+        CompProcessor p;
+        auto layout = p.getBusesLayout();
+        layout.inputBuses.getReference (1) = juce::AudioChannelSet::stereo();
+        checkBool ("Sidechain-Bus aktivierbar", p.setBusesLayout (layout));
+        p.prepareToPlay (48000, 512);
+        setParam (p.apvts, "source", 1);
+        juce::AudioBuffer<float> b (4, 512); juce::MidiBuffer m;
+        long t = 0; double e = 0;
+        for (int k = 0; k < 100; ++k)
+        {
+            for (int i = 0; i < 512; ++i, ++t)
+            {
+                const float v = 0.0316f * std::sin (2.0f * juce::MathConstants<float>::pi * 1000.0f * (float) t / 48000.0f);
+                b.setSample (0, i, v); b.setSample (1, i, v); b.setSample (2, i, 0.9f); b.setSample (3, i, 0.9f);
+            }
+            p.processBlock (b, m);
+            if (k >= 80) for (int i = 0; i < 512; ++i) e += b.getSample (0, i) * b.getSample (0, i);
+        }
+        const float lvl = (float) (10 * std::log10 (e / (20 * 512)) - 20 * std::log10 (0.0316 / std::sqrt (2.0)));
+        check ("Sidechain laut drückt leises Signal", lvl, -12.8f, 1.0f);
+    }
+    render<CompProcessor, CompEditor> (dir, "onno-comp.png", 900, 430, [] (CompProcessor& p) { setParam (p.apvts, "thr", -24); setParam (p.apvts, "attack", 3); }, -1, 320, true);
+}
+
+static void testGate (const juce::File& dir)
+{
+    std::puts ("--- Onno Gate ---");
+    using F = std::function<void (GateProcessor&)>;
+    check ("-20 dBFS über Threshold: offen", measure<GateProcessor> (1000, 0.1f, F ([] (GateProcessor&) {})), 0.0f, 0.05f);
+    check ("-60 dBFS, Range -40: zu", measure<GateProcessor> (1000, 0.001f, F ([] (GateProcessor& p) { setParam (p.apvts, "range", -40); })), -40.0f, 0.1f);
+    check ("-60 dBFS, Range -80 (= -inf)", std::max (-200.0f, measure<GateProcessor> (1000, 0.001f, F ([] (GateProcessor&) {}))), -200.0f, 1.0f);
+    check ("Detektor-HPF 2 kHz hält 100 Hz zu", measure<GateProcessor> (100, 0.1f, F ([] (GateProcessor& p) {
+        setParam (p.apvts, "scHpf", 2000); setParam (p.apvts, "thr", -30); setParam (p.apvts, "range", -30); })), -30.0f, 0.5f);
+    {   // Hold und Release: nach Signalende erst Hold, dann Abfall
+        GateProcessor p; p.prepareToPlay (48000, 480);
+        setParam (p.apvts, "hold", 100); setParam (p.apvts, "release", 20); setParam (p.apvts, "range", -60);
+        juce::AudioBuffer<float> b (2, 480); juce::MidiBuffer m;
+        std::vector<float> gains;
+        for (int k = 0; k < 60; ++k)
+        {
+            const float lvl = k < 20 ? 0.5f : 0.0001f;    // -80 dBFS nach 200 ms
+            for (int i = 0; i < 480; ++i) { b.setSample (0, i, lvl); b.setSample (1, i, lvl); }
+            p.processBlock (b, m);
+            gains.push_back (b.getSample (0, 479) / lvl);
+        }
+        checkBool ("Hold: 80 ms nach Ende noch offen", gains[27] > 0.9f);
+        checkBool ("Release: 250 ms nach Ende zu", gains[45] < 0.01f);
+    }
+    render<GateProcessor, GateEditor> (dir, "onno-gate.png", 900, 430, [] (GateProcessor& p) { setParam (p.apvts, "thr", -24); }, -1, 320, true);
+}
+
+static void testDelay (const juce::File& dir)
+{
+    std::puts ("--- Onno Delay ---");
+    DelayProcessor p; p.prepareToPlay (48000, 512);
+    setParam (p.apvts, "wet", 0);
+    juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m;
+    std::vector<float> out;
+    for (int k = 0; k < 220; ++k)
+    {
+        b.clear();
+        if (k == 0) { b.setSample (0, 0, 1.0f); b.setSample (1, 0, 1.0f); }
+        p.processBlock (b, m);
+        for (int i = 0; i < 512; ++i) out.push_back (b.getSample (0, i));
+    }
+    check ("Direktsignal", 20 * std::log10 (std::abs (out[0])), 0.0f, 0.01f);
+    check ("Echo 1 nach 1/4 @120 BPM (24000)", 20 * std::log10 (std::abs (out[24000])), 0.0f, 0.1f);
+    check ("Echo 2 mit 35 % Feedback", 20 * std::log10 (std::abs (out[48000])), 20 * std::log10 (0.35f), 0.1f);
+    float stray = 0;
+    for (int i = 1; i < 23990; ++i) stray = std::max (stray, std::abs (out[(size_t) i]));
+    checkBool ("Nichts zwischen Direktsignal und Echo", stray < 1.0e-4f);
+
+    {   // Stabilität bei 98 % Feedback, Ping-Pong, alle Taps
+        DelayProcessor q; q.prepareToPlay (48000, 512);
+        for (int t = 0; t < 3; ++t)
+        {
+            setParam (q.apvts, DelayProcessor::id (t, "on").toRawUTF8(), 1);
+            setParam (q.apvts, DelayProcessor::id (t, "fb").toRawUTF8(), 98);
+            setParam (q.apvts, DelayProcessor::id (t, "pp").toRawUTF8(), t != 1);
+            setParam (q.apvts, DelayProcessor::id (t, "sync").toRawUTF8(), 0);
+            setParam (q.apvts, DelayProcessor::id (t, "time").toRawUTF8(), 20.0f + 30.0f * t);
+        }
+        juce::Random rnd (3); long t = 0; float mx = 0; bool finite = true;
+        for (int k = 0; k < 2000; ++k)
+        {
+            fill (b, t, 300, k < 50 ? 0.5f : 0.0f, k < 50 ? 0.2f : 0.0f, rnd);
+            q.processBlock (b, m);
+            for (int i = 0; i < 512; ++i) { const float v = b.getSample (0, i); finite = finite && std::isfinite (v); mx = std::max (mx, std::abs (v)); }
+        }
+        checkBool ((juce::String ("98 % Feedback stabil (Spitze ") + juce::String (mx, 2) + ")").toRawUTF8(), finite && mx < 20.0f);
+    }
+    render<DelayProcessor, DelayEditor> (dir, "onno-delay.png", 900, 430, [] (DelayProcessor& p) {
+        setParam (p.apvts, "t2on", 1); setParam (p.apvts, "t2pp", 1); setParam (p.apvts, "t3on", 1); setParam (p.apvts, "t3level", -12); setParam (p.apvts, "duck", 40); }, -1, 320, true);
+}
+
+static void testMultiComp (const juce::File& dir)
+{
+    std::puts ("--- Onno MultiComp ---");
+    using F = std::function<void (MultiCompProcessor&)>;
+    auto flat = F ([] (MultiCompProcessor& p) { for (int b = 0; b < 4; ++b) setParam (p.apvts, MultiCompProcessor::id (b, "thr").toRawUTF8(), 0); });
+    for (float f : { 40.0f, 120.0f, 500.0f, 1000.0f, 3000.0f, 5000.0f, 12000.0f })
+        // Toleranz 0,05 dB: die Allpass-Phase verschiebt bei tiefen Tönen das Messfenster minimal
+        check (("Weichen-Summe flach bei " + juce::String (f) + " Hz").toRawUTF8(), measure<MultiCompProcessor> (f, 0.25f, flat), 0.0f, 0.05f);
+    check ("Low-Mid -30 dB 4:1 bei 400 Hz", measure<MultiCompProcessor> (400, 0.25f, F ([] (MultiCompProcessor& p) {
+        for (int b = 0; b < 4; ++b) setParam (p.apvts, MultiCompProcessor::id (b, "thr").toRawUTF8(), 0);
+        setParam (p.apvts, "b2thr", -30); setParam (p.apvts, "b2ratio", 4); })), -12.5f, 1.5f);
+    check ("Band-Gain High +6 dB bei 12 kHz", measure<MultiCompProcessor> (12000, 0.25f, F ([] (MultiCompProcessor& p) {
+        for (int b = 0; b < 4; ++b) setParam (p.apvts, MultiCompProcessor::id (b, "thr").toRawUTF8(), 0);
+        setParam (p.apvts, "b4gain", 6); })), 6.0f, 0.1f);
+    check ("Solo High: 100 Hz fast weg", std::max (-80.0f, measure<MultiCompProcessor> (100, 0.25f, F ([] (MultiCompProcessor& p) { setParam (p.apvts, "b4solo", 1); }))), -80.0f, 30.0f);
+    render<MultiCompProcessor, MultiCompEditor> (dir, "onno-multicomp.png", 900, 430, [] (MultiCompProcessor& p) { setParam (p.apvts, "b1thr", -30); setParam (p.apvts, "b2thr", -24); }, -1, 320, true);
+}
+
+static void testLimit (const juce::File& dir)
+{
+    std::puts ("--- Onno Limit ---");
+    using F = std::function<void (LimitProcessor&)>;
+    check ("-30 dBFS unberührt", measure<LimitProcessor> (1000, 0.0316f, F ([] (LimitProcessor&) {})), 0.0f, 0.01f);
+    check ("Threshold -6 bei -30 dBFS = +6 dB", measure<LimitProcessor> (1000, 0.0316f, F ([] (LimitProcessor& p) { setParam (p.apvts, "thr", -6); })), 6.0f, 0.01f);
+    LimitProcessor p; p.prepareToPlay (48000, 512);
+    setParam (p.apvts, "thr", -12);
+    checkBool ("Latenz 1,5 ms (71 Samples)", p.getLatencySamples() == 71);
+    juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m;
+    juce::Random rnd (4); long t = 0; float mx = 0;
+    for (int k = 0; k < 400; ++k)
+    {
+        fill (b, t, 80, k % 40 < 3 ? 0.9f : 0.2f, 0.3f, rnd);     // Schläge mit Rauschen
+        if (k % 17 == 0) { b.setSample (0, 100, 1.0f); b.setSample (1, 100, -1.0f); }
+        p.processBlock (b, m);
+        mx = std::max (mx, b.getMagnitude (0, 512));
+        mx = std::max (mx, b.getMagnitude (1, 512));
+    }
+    check ("Spitze bleibt unter Ceiling -0.3", 20 * std::log10 (mx), -0.3f, 0.005f);
+    render<LimitProcessor, LimitEditor> (dir, "onno-limit.png", 760, 400, [] (LimitProcessor& p) { setParam (p.apvts, "thr", -8); }, -1, 320, true);
+}
+
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui;
     juce::File dir (argc > 1 ? juce::String (argv[1]) : juce::File::getCurrentWorkingDirectory().getFullPathName());
-    testVC1 (dir);
-    testCS1 (dir);
-    testRV1 (dir);
+    // optional: nur bestimmte Plugins testen, z. B. "OnnoTests out EQ Comp"
+    auto want = [&] (const char* n) {
+        if (argc <= 2) return true;
+        for (int i = 2; i < argc; ++i) if (juce::String (argv[i]) == n) return true;
+        return false;
+    };
+    if (want ("VC1")) testVC1 (dir);
+    if (want ("CS1")) testCS1 (dir);
+    if (want ("RV1")) testRV1 (dir);
+    if (want ("EQ")) testEQ (dir);
+    if (want ("Comp")) testComp (dir);
+    if (want ("Gate")) testGate (dir);
+    if (want ("Delay")) testDelay (dir);
+    if (want ("MultiComp")) testMultiComp (dir);
+    if (want ("Limit")) testLimit (dir);
     std::printf ("\n%s (%d Fehler)\n", failures == 0 ? "ALLE TESTS OK" : "TESTS FEHLGESCHLAGEN", failures);
     return failures == 0 ? 0 : 1;
 }
