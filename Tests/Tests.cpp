@@ -538,7 +538,7 @@ static void testLimit (const juce::File& dir)
     check ("Threshold -6 bei -30 dBFS = +6 dB", measure<LimitProcessor> (1000, 0.0316f, F ([] (LimitProcessor& p) { setParam (p.apvts, "thr", -6); })), 6.0f, 0.01f);
     LimitProcessor p; p.prepareToPlay (48000, 512);
     setParam (p.apvts, "thr", -12);
-    checkBool ("Latenz 1,5 ms (71 Samples)", p.getLatencySamples() == 71);
+    checkBool ("Latenz 1,5 ms + True-Peak-Fenster (83 Samples)", p.getLatencySamples() == 83);
     juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m;
     juce::Random rnd (4); long t = 0; float mx = 0;
     for (int k = 0; k < 400; ++k)
@@ -770,6 +770,128 @@ static void testFramework (const juce::File& dir)
     }
 }
 
+// Klang-Prüfung: Messwerte, an denen sich Profi-Plugins messen lassen (Aliasing, EQ-Höhen, True Peak, Zipper)
+static float tinyDft (const std::vector<float>& x, double f, double sr)
+{
+    // Amplitude bei Frequenz f mit Blackman-Harris-Fenster (normiert auf Sinus-Amplitude)
+    const int n = (int) x.size();
+    double c = 0, s = 0, wsum = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        const double a = 2 * juce::MathConstants<double>::pi * i / (n - 1);
+        const double w = 0.35875 - 0.48829 * std::cos (a) + 0.14128 * std::cos (2 * a) - 0.01168 * std::cos (3 * a);
+        const double ph = 2 * juce::MathConstants<double>::pi * f * i / sr;
+        c += x[(size_t) i] * w * std::cos (ph); s += x[(size_t) i] * w * std::sin (ph); wsum += w;
+    }
+    return (float) (2 * std::sqrt (c * c + s * s) / wsum);
+}
+
+static void testAudit()
+{
+    std::puts ("--- Klang-Pruefung ---");
+    // 1) Aliasing der Analog-Stufe: 9 kHz Sinus, Drive 100 %, 48 kHz
+    for (int mdl : { 1, 4 })
+    {
+        EQProcessor p; p.prepareToPlay (48000, 512);
+        setParam (p.apvts, "analog", (float) mdl); setParam (p.apvts, "drive", 100);
+        juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m; juce::Random rnd (1); long t = 0;
+        std::vector<float> y;
+        for (int k = 0; k < 60; ++k)
+        {
+            fill (b, t, 9000, 0.5f, 0, rnd); p.processBlock (b, m);
+            if (k >= 20) for (int i = 0; i < 512; ++i) y.push_back (b.getSample (0, i));
+        }
+        const float fund = tinyDft (y, 9000, 48000);
+        float worst = 0, worstF = 0;
+        for (double f : { 3000.0, 6000.0, 12000.0, 15000.0, 21000.0 })   // Spiegelungen von 27, 36, 45, 54 kHz ...
+        {
+            const float a = tinyDft (y, f, 48000);
+            if (a > worst) { worst = a; worstF = (float) f; }
+        }
+        std::printf ("     Aliasing %s, 9 kHz, Drive 100 %%: staerkste Spiegelung %.0f Hz bei %+.1f dBc\n",
+                     mdl == 1 ? "BRIT" : "FET ", worstF, 20 * std::log10 (worst / fund));
+        checkBool ("Aliasing unter -70 dBc (vorher -16)", 20 * std::log10 (worst / fund) < -70);
+    }
+    // 2) EQ in den Höhen gegen das analoge Vorbild
+    using FE = std::function<void (EQProcessor&)>;
+    auto bell = FE ([] (EQProcessor& p) { setParam (p.apvts, "b4freq", 12000); setParam (p.apvts, "b4gain", 12); setParam (p.apvts, "b4q", 1); });
+    const float ref[] = { 12.0f, 8.64f, 6.94f };
+    int i = 0;
+    for (float f : { 12000.0f, 16000.0f, 18000.0f })
+    {
+        const float got = measure<EQProcessor> (f, 0.05f, bell);
+        std::printf ("     Bell 12 kHz +12 dB Q1 bei %5.0f Hz: %+5.2f dB (analog %+5.2f)\n", f, got, ref[i]);
+        check ("EQ folgt dem analogen Vorbild (1 dB)", got, ref[i++], 1.0f);
+    }
+    // 3) True Peak nach dem Limiter: 12 kHz, Phase so, dass die Samples die Spitze verfehlen
+    {
+        LimitProcessor p; p.prepareToPlay (48000, 512);
+        setParam (p.apvts, "thr", -6);
+        juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m;
+        std::vector<float> y; long t = 0;
+        for (int k = 0; k < 40; ++k)
+        {
+            for (int j = 0; j < 512; ++j, ++t)
+            {
+                const float v = std::sin (2.0f * juce::MathConstants<float>::pi * 12000.0f * t / 48000.0f + 0.785398f);
+                b.setSample (0, j, v); b.setSample (1, j, v);
+            }
+            p.processBlock (b, m);
+            if (k >= 10) for (int j = 0; j < 512; ++j) y.push_back (b.getSample (0, j));
+        }
+        float sp = 0, tp = 0;
+        for (auto v : y) sp = std::max (sp, std::abs (v));
+        // 8-fach überabgetastet mit Fenster-Sinc (64 Stützstellen) rekonstruieren
+        for (int n = 64; n < (int) y.size() - 64; ++n)
+            for (int ph = 0; ph < 8; ++ph)
+            {
+                const double tt = ph / 8.0;
+                double acc = 0;
+                for (int k = -32; k <= 32; ++k)
+                {
+                    const double xx = k - tt;
+                    const double sinc = std::abs (xx) < 1e-9 ? 1.0 : std::sin (juce::MathConstants<double>::pi * xx) / (juce::MathConstants<double>::pi * xx);
+                    const double w = 0.5 + 0.5 * std::cos (juce::MathConstants<double>::pi * xx / 33.0);
+                    acc += y[(size_t) (n + k)] * sinc * w;
+                }
+                tp = std::max (tp, (float) std::abs (acc));
+            }
+        std::printf ("     Limit Ceiling -0,3 dB: Sample-Spitze %+.2f dBFS, echte Spitze (True Peak) %+.2f dBTP\n",
+                     20 * std::log10 (sp), 20 * std::log10 (tp));
+        checkBool ("True Peak bleibt unter -0,1 dBTP", 20 * std::log10 (tp) < -0.1f);
+    }
+    // 4) Zipper: EQ-Gain springt pro Block (wie beim Automatisieren) - Störungen neben dem Ton
+    {
+        EQProcessor p; p.prepareToPlay (48000, 512);
+        setParam (p.apvts, "b4freq", 1000); setParam (p.apvts, "b4q", 0.7f);
+        juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m; juce::Random rnd (1); long t = 0;
+        std::vector<float> y;
+        for (int k = 0; k < 120; ++k)
+        {
+            setParam (p.apvts, "b4gain", 6.0f * std::sin (2 * 3.14159f * k / 40.0f));   // Gain schwingt ±6 dB
+            fill (b, t, 1000, 0.25f, 0, rnd); p.processBlock (b, m);
+            if (k >= 20) for (int j = 0; j < 512; ++j) y.push_back (b.getSample (0, j));
+        }
+        const float fund = tinyDft (y, 1000, 48000);
+        float worst = 0;
+        for (int h = 2; h <= 6; ++h) worst = std::max (worst, tinyDft (y, 1000 + h * 93.75, 48000));
+        std::printf ("     EQ-Gain automatisiert: Blockraster-Stoerung %+.1f dBc (neben 1 kHz)\n", 20 * std::log10 (worst / fund));
+    }
+    // 5) Kompressor auf Bass mit schneller Attack: Klirr
+    using FC = std::function<void (CompProcessor&)>;
+    for (float att : { 0.3f, 3.0f, 30.0f })
+    {
+        CompProcessor p; p.prepareToPlay (48000, 480);
+        setParam (p.apvts, "thr", -30); setParam (p.apvts, "ratio", 4); setParam (p.apvts, "attack", att); setParam (p.apvts, "release", 40);
+        juce::AudioBuffer<float> b (2, 480); juce::MidiBuffer m; juce::Random rnd (5); long t = 0;
+        std::vector<float> y;
+        for (int k = 0; k < 200; ++k) { fill (b, t, 80, 0.5f, 0, rnd); p.processBlock (b, m); if (k >= 100) for (int j = 0; j < 480; ++j) y.push_back (b.getSample (0, j)); }
+        const float f1 = tinyDft (y, 80, 48000);
+        double h = 0; for (int k = 2; k <= 10; ++k) { const float a = tinyDft (y, 80.0 * k, 48000); h += a * a; }
+        std::printf ("     Comp 80 Hz, -30 dB 4:1, Attack %4.1f ms, Release 40 ms: Klirr %.2f %%\n", att, 100 * std::sqrt (h) / f1);
+    }
+}
+
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -792,6 +914,7 @@ int main (int argc, char** argv)
     if (want ("Analog")) testAnalog();
     if (want ("Tame")) testTame (dir);
     if (want ("Framework")) testFramework (dir);
+    if (want ("Audit")) testAudit();
     std::printf ("\n%s (%d Fehler)\n", failures == 0 ? "ALLE TESTS OK" : "TESTS FEHLGESCHLAGEN", failures);
     return failures == 0 ? 0 : 1;
 }

@@ -9,6 +9,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout LimitProcessor::layout()
     prm::lin (p, "thr", "Threshold", -24, 0, 0, "dB");
     prm::lin (p, "ceiling", "Ceiling", -12, 0, -0.3f, "dB");
     prm::lg (p, "release", "Release", 1, 1000, 60, "ms");
+    prm::bl (p, "tp", "True Peak", true);
     Analog::addParams (p);
     prm::bl (p, "bypass", "Bypass", false);
     return prm::done (p);
@@ -16,15 +17,32 @@ juce::AudioProcessorValueTreeState::ParameterLayout LimitProcessor::layout()
 
 LimitProcessor::LimitProcessor() : ModernProcessor ("Onno Limit", "OnnoLimit", stereoBuses(), layout())
 {
-    pThr = raw ("thr"); pCeil = raw ("ceiling"); pRel = raw ("release"); pBypass = raw ("bypass");
+    pThr = raw ("thr"); pCeil = raw ("ceiling"); pRel = raw ("release"); pBypass = raw ("bypass"); pTp = raw ("tp");
     analog.attach (*this);
+    // Interpolationsfilter: gefensterter Sinc, Phase p liegt p/8 Sample hinter dem Sample tpDelay
+    for (int ph = 1; ph < tpPhases; ++ph)
+    {
+        double sum = 0;
+        for (int k = 0; k < tpTaps; ++k)
+        {
+            const double d = (tpTaps - 1 - tpDelay) + ph / (double) tpPhases - k;   // Abstand zum Stützpunkt
+            const double x = juce::MathConstants<double>::pi * d;
+            const double sinc = std::abs (d) < 1e-9 ? 1.0 : std::sin (x) / x;
+            const double w = 0.5 + 0.5 * std::cos (juce::MathConstants<double>::pi * d / (tpTaps * 0.5 + 0.5));
+            tpH[ph][k] = (float) (sinc * w);
+            sum += sinc * w;
+        }
+        for (int k = 0; k < tpTaps; ++k) tpH[ph][k] = (float) (tpH[ph][k] / sum);
+    }
 }
 
 void LimitProcessor::prepare (double sampleRate, int)
 {
     sr = sampleRate;
     L = std::max (2, (int) std::round (0.0015 * sr));
-    for (auto& d : dl) d.assign ((size_t) L + 1, 0.0f);
+    for (auto& d : dl) d.assign ((size_t) (L + 1 + tpDelay), 0.0f);
+    for (auto& h : hist) std::fill (std::begin (h), std::end (h), 0.0f);
+    histPos = 0;
     box.assign ((size_t) L, 1.0f);
     boxSum = L;
     dqv.assign ((size_t) L + 2, 1.0f);
@@ -32,9 +50,23 @@ void LimitProcessor::prepare (double sampleRate, int)
     dlPos = boxPos = dqHead = dqSize = 0;
     t = 0; env = 1;
     analog.prepare (sr);
-    setLatencySamples (L - 1);
+    setLatencySamples (L - 1 + tpDelay);
     driveS.reset (sr, 0.02); driveS.setCurrentAndTargetValue (dsp::db2a (-pThr->load()));
     ceilS.reset (sr, 0.02); ceilS.setCurrentAndTargetValue (dsp::db2a (pCeil->load()));
+}
+
+// größter Betrag zwischen Sample (n - tpDelay) und dem nächsten, aus den letzten tpTaps Samples interpoliert
+float LimitProcessor::truePeak (int ch) const
+{
+    const float* h = hist[ch];
+    float pk = std::abs (h[(histPos + tpTaps - 1 - tpDelay) % tpTaps]);
+    for (int ph = 1; ph < tpPhases; ++ph)
+    {
+        float acc = 0;
+        for (int k = 0; k < tpTaps; ++k) acc += tpH[ph][k] * h[(histPos + k) % tpTaps];   // histPos = ältester Wert
+        pk = std::max (pk, std::abs (acc));
+    }
+    return pk;
 }
 
 void LimitProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
@@ -52,6 +84,7 @@ void LimitProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
     const float relC = dsp::coef (pRel->load(), sr);
     analog.beginBlock();
     const bool sat = analog.active() && ! bypass;
+    const bool tp = pTp->load() > 0.5f;
     const int cap = (int) dqv.size(), D = (int) dl[0].size();
     float inPk = 0, drvPk = 0, outPk = 0, gMin = 1;
 
@@ -63,7 +96,12 @@ void LimitProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
         // Sättigung vor dem Limiter (nach dem Threshold-Gain), danach ohne weiteres Gain
         float sl = xl, sr2 = xr;
         if (sat) { analog.advance(); sl = analog.tick (xl * drive, 0); sr2 = analog.tick (xr * drive, 1); drive = 1.0f; }
-        const float pk = std::max (std::abs (sl), std::abs (sr2)) * drive;
+        // Verlauf für die Spitzenerkennung (Erkennung läuft tpDelay Samples hinterher, Audio entsprechend länger verzögert)
+        hist[0][histPos] = sl * drive; hist[1][histPos] = sr2 * drive;
+        histPos = (histPos + 1) % tpTaps;
+        const float pk = tp ? std::max (truePeak (0), truePeak (1))
+                            : std::max (std::abs (hist[0][(histPos + tpTaps - 1 - tpDelay) % tpTaps]),
+                                        std::abs (hist[1][(histPos + tpTaps - 1 - tpDelay) % tpTaps]));
         const float r = pk > ceil ? ceil / pk : 1.0f;
 
         // gleitendes Minimum über L Samples (monotone Warteschlange)
@@ -82,7 +120,7 @@ void LimitProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
 
         // Audio um L-1 Samples verzögern
         dl[0][(size_t) dlPos] = sl; dl[1][(size_t) dlPos] = sr2;
-        int rp = dlPos - (L - 1); if (rp < 0) rp += D;
+        int rp = dlPos - (L - 1 + tpDelay); if (rp < 0) rp += D;
         const float yl = dl[0][(size_t) rp], yr = dl[1][(size_t) rp];
         if (++dlPos >= D) dlPos = 0;
 
@@ -127,6 +165,9 @@ LimitEditor::LimitEditor (LimitProcessor& p) : ModernEditor (p, p.apvts, "LIMIT"
     knobs.push_back ({ "thr", "THRESHOLD", 80, 336, 26, mc::red(), [] (float v) { return fmt::db (v); } });
     knobs.push_back ({ "ceiling", "CEILING", 176, 336, 26, modern::warm(), [] (float v) { return fmt::db (v); } });
     knobs.push_back ({ "release", "RELEASE", 272, 336, 26, mc::amber(), [] (float v) { return fmt::ms (v); } });
+    buttons.push_back ({ { 650, 320, 82, 20 }, [] { return String ("TRUE PEAK"); }, [this] { return flag ("tp"); },
+                         [this] { toggle ("tp"); }, mc::green() });
+    help["TRUE PEAK"] = String::fromUTF8 ("Erkennt auch Spitzen zwischen den Samples. An lassen, damit nach MP3/AAC und D/A-Wandlung nichts übersteuert.");
     addAnalogStrip();
 }
 
@@ -152,14 +193,14 @@ void LimitEditor::drawBackground (juce::Graphics& g)
     auto bar = [&] (float y, const char* label, float v, float lo, float hi, Colour c, bool fromRight)
     {
         g.setFont (font (9)); g.setColour (modern::dim()); ltext (g, label, 350, y + 1, 9);
-        const juce::Rectangle<float> r { 392, y, 290, 10 };
+        const juce::Rectangle<float> r { 392, y, 196, 10 };
         g.setColour (rgb (24, 27, 34)); g.fillRoundedRectangle (r, 3);
         const float nrm = juce::jlimit (0.0f, 1.0f, (v - lo) / (hi - lo));
         g.setColour (c);
         if (fromRight) g.fillRoundedRectangle (r.getRight() - r.getWidth() * (1 - nrm), y, r.getWidth() * (1 - nrm), 10, 3);
         else g.fillRoundedRectangle (r.getX(), y, r.getWidth() * nrm, 10, 3);
         g.setFont (font (10)); g.setColour (modern::text());
-        rtext (g, v <= -89 ? String ("-inf") : String (v, 1), 732, y - 1, 10);
+        rtext (g, v <= -89 ? String ("-inf") : String (v, 1), 632, y - 1, 10);
     };
     bar (302, "IN", inD, -48, 6, rgb (150, 162, 185), false);
     bar (326, "GR", grD, -24, 0, mc::red(), true);

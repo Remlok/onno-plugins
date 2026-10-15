@@ -1,5 +1,7 @@
 #pragma once
-// Onno Limit: Brickwall-Limiter im Stil von ReaLimit (Lookahead 1,5 ms, keine Übersteuerung über die Ceiling)
+// Onno Limit: Brickwall-Limiter im Stil von ReaLimit (Lookahead 1,5 ms, keine Übersteuerung über die Ceiling).
+// TRUE PEAK: erkennt auch Spitzen zwischen den Samples (8-fach interpoliert), damit nach dem
+// Umwandeln (MP3/AAC, D/A-Wandler) nichts über die Ceiling geht.
 #include "Common/ModernProcessor.h"
 #include "Common/ModernEditor.h"
 #include "Common/OnnoDSP.h"
@@ -17,7 +19,12 @@ public:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout layout();
-    std::atomic<float> *pThr, *pCeil, *pRel, *pBypass;
+    std::atomic<float> *pThr, *pCeil, *pRel, *pBypass, *pTp;
+    static constexpr int tpTaps = 24, tpPhases = 8, tpDelay = 12;
+    float tpH[tpPhases][tpTaps] {};
+    float hist[2][tpTaps] {};
+    int histPos = 0;
+    float truePeak (int ch) const;
     double sr = 48000;
     int L = 72;                               // Fensterlänge in Samples
     std::vector<float> dl[2], box, dqv;

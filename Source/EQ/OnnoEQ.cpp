@@ -79,8 +79,9 @@ int EQProcessor::design (const Band& bd, double sr, dsp::Biquad* st)
     const double f = std::min ((double) bd.freq, sr * 0.49);
     switch (bd.type)
     {
-        case lowShelf:  st[0].lowShelf (sr, f, juce::jlimit (0.3f, 2.0f, bd.q), bd.gain); return 1;
-        case highShelf: st[0].highShelf (sr, f, juce::jlimit (0.3f, 2.0f, bd.q), bd.gain); return 1;
+        // Glocke, Shelves und High Cut analog-genau (keine Stauchung zur Nyquist-Frequenz hin)
+        case lowShelf:  st[0].matched (dsp::Biquad::Kind::lowShelf, sr, f, juce::jlimit (0.3f, 2.0f, bd.q), bd.gain); return 1;
+        case highShelf: st[0].matched (dsp::Biquad::Kind::highShelf, sr, f, juce::jlimit (0.3f, 2.0f, bd.q), bd.gain); return 1;
         case notch:     st[0].notch (sr, f, bd.q); return 1;
         case bandPass:  st[0].bandPass (sr, f, bd.q); return 1;
         case lowCut:
@@ -93,11 +94,11 @@ int EQProcessor::design (const Band& bd, double sr, dsp::Biquad* st)
             for (int i = 0; i < n; ++i)
             {
                 const double q = i == n - 1 ? qs[i] * bd.q / 0.7071 : qs[i];
-                if (bd.type == lowCut) st[i].highPass (sr, f, q); else st[i].lowPass (sr, f, q);
+                if (bd.type == lowCut) st[i].highPass (sr, f, q); else st[i].matched (dsp::Biquad::Kind::lowPass, sr, f, q);
             }
             return n;
         }
-        default: st[0].peak (sr, f, bd.q, bd.gain); return 1;
+        default: st[0].matched (dsp::Biquad::Kind::peak, sr, f, bd.q, bd.gain); return 1;
     }
 }
 

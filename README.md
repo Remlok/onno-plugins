@@ -12,12 +12,12 @@ Eigene Audio-Plugins (VST3, auf dem Mac auch AU) mit C++ und JUCE 8. Sie laufen 
 
 | Plugin | Vorbild | Inhalt |
 |---|---|---|
-| Onno EQ | ReaEQ | 8 Bänder (Low/High Cut 12/24/48 dB, Shelf, Bell, Notch, Band Pass), Kurve mit ziehbaren Knoten, Analyzer Pre/Post |
+| Onno EQ | ReaEQ | Analog-genaue Filter ohne Stauchung in den Höhen (Glocke 12 kHz +12 dB: bei 16 kHz +8,1 dB, analog +8,6, vorher +5,3); 8 Bänder (Low/High Cut 12/24/48 dB, Shelf, Bell, Notch, Band Pass), Kurve mit ziehbaren Knoten, Analyzer Pre/Post |
 | Onno Comp | ReaComp | Threshold, Ratio bis unendlich, Knee, Attack, Release, Lookahead, RMS, Detektor-HPF, Sidechain, Mix, Auto Gain, Limit 0 dB; Kennlinie und Verlauf |
 | Onno Gate | ReaGate | Threshold mit Hysterese, Attack, Hold, Release, Range, Lookahead, Detektor-HPF/LPF, Sidechain, Listen |
 | Onno Delay | ReaDelay | 3 Taps mit Sync oder ms, Feedback, Pegel, Pan, Low/High Cut im Feedback, Ping-Pong; Dry/Wet, Ducking; Taps im Display ziehbar |
 | Onno MultiComp | ReaXcomp | 4 Bänder mit Linkwitz-Riley-Weichen (Summe flach), je Band Threshold/Ratio/Attack/Release/Gain, Solo, Band aus; Analyzer und Gain Reduction pro Band |
-| Onno Limit | ReaLimit | Brickwall mit 1,5 ms Lookahead: Threshold, Ceiling, Release; keine Spitze über der Ceiling |
+| Onno Limit | ReaLimit | Brickwall mit 1,5 ms Lookahead: Threshold, Ceiling, Release; TRUE PEAK (8-fach interpoliert) hält auch Spitzen zwischen den Samples unter der Ceiling |
 
 ### Eigene Werkzeuge
 
@@ -25,7 +25,7 @@ Eigene Audio-Plugins (VST3, auf dem Mac auch AU) mit C++ und JUCE 8. Sie laufen 
 |---|---|
 | Onno Tame | Spektraler Resonanz-Zähmer (Idee: soothe): findet Frequenzen, die aus der eigenen spektralen Hüllkurve herausragen, und drückt sie dynamisch, Bin für Bin. Depth, Sharpness, Selectivity, Attack, Release, Bereich (Ränder im Display ziehen), Empfindlichkeitskurve mit 4 Knoten, 8 Metal-Profile (Rhythm Gtr, Lead Gtr, Scream, Clean Vox, Snare, Overheads, Bass, Mix Bus), Delta (nur das Entfernte hören), Stereo Link, Mix. Latenz 1024 Samples bei 44,1/48 kHz, wird dem Host gemeldet. |
 
-**Analoge Klangfarbe** (Leiste ANALOG unten in allen sechs): CLEAN (aus), BRIT (Übertrager, dichte Bässe, weiche Höhen), CONSOLE (sauber, ungerade Obertöne, etwas Glanz), TUBE (Röhre, warme geradzahlige Obertöne), FET (1176-artig, bissig, Präsenz). DRIVE bestimmt, wie stark gesättigt wird; bei 35 % liegt der Klirr bei -12 dBFS um 2-4 %, leise Signale bleiben im Pegel gleich. Im Delay läuft jede Wiederholung erneut durch die Sättigung wie bei einem Bandecho, im Limit sitzt sie vor dem Limiter.
+**Analoge Klangfarbe** (Leiste ANALOG unten in allen sechs): CLEAN (aus), BRIT (Übertrager, dichte Bässe, weiche Höhen), CONSOLE (sauber, ungerade Obertöne, etwas Glanz), TUBE (Röhre, warme geradzahlige Obertöne), FET (1176-artig, bissig, Präsenz). Die Sättigung läuft 4-fach überabgetastet (Spiegelfrequenzen bei 9 kHz und vollem Drive -76 bis -104 dBc statt -16 dBc). DRIVE bestimmt, wie stark gesättigt wird; bei 35 % liegt der Klirr bei -12 dBFS um 2-4 %, leise Signale bleiben im Pegel gleich. Im Delay läuft jede Wiederholung erneut durch die Sättigung wie bei einem Bandecho, im Limit sitzt sie vor dem Limiter.
 
 Alle sieben (EQ, Comp, Gate, Delay, MultiComp, Limit, Tame) teilen sich eine Oberfläche: oben die große Anzeige zum Anfassen, unten die Regler. Das Fenster lässt sich frei skalieren.
 
