@@ -3,37 +3,13 @@
 using namespace onno;
 using juce::String;
 
-const juce::StringArray EQProcessor::typeNames { "Low Cut", "Low Shelf", "Bell", "Notch", "High Shelf", "High Cut", "Band Pass" };
+const juce::StringArray EQProcessor::typeNames = [] { juce::StringArray a; for (auto& n : EQProcessor::Core::typeNames()) a.add (n); return a; }();
 const juce::StringArray EQProcessor::typeShort { "LC", "LS", "BELL", "NOTCH", "HS", "HC", "BP" };
-
-namespace
-{
-struct Def { bool on; int type; float freq, q; };
-const Def defaults[EQProcessor::numBands] = {
-    { false, EQProcessor::lowCut, 30, 0.707f }, { true, EQProcessor::lowShelf, 100, 0.707f },
-    { true, EQProcessor::bell, 400, 1.0f },     { true, EQProcessor::bell, 1500, 1.0f },
-    { true, EQProcessor::bell, 4000, 1.0f },    { true, EQProcessor::highShelf, 8000, 0.707f },
-    { false, EQProcessor::highCut, 18000, 0.707f }, { false, EQProcessor::bell, 1000, 1.0f },
-};
-}
 
 juce::AudioProcessorValueTreeState::ParameterLayout EQProcessor::layout()
 {
     prm::Layout p;
-    for (int b = 0; b < numBands; ++b)
-    {
-        const String n = "Band " + String (b + 1) + " ";
-        prm::bl (p, id (b, "on"), n + "On", defaults[b].on);
-        prm::ch (p, id (b, "type"), n + "Type", typeNames, defaults[b].type);
-        prm::lg (p, id (b, "freq"), n + "Freq", 20, 20000, defaults[b].freq, "Hz");
-        prm::lin (p, id (b, "gain"), n + "Gain", -24, 24, 0, "dB");
-        prm::lg (p, id (b, "q"), n + "Q", 0.1f, 18, defaults[b].q);
-        prm::ch (p, id (b, "slope"), n + "Slope", { "12 dB/oct", "24 dB/oct", "48 dB/oct" }, 1);
-    }
-    prm::lin (p, "output", "Output", -24, 24, 0, "dB");
-    Analog::addParams (p);
-    prm::ch (p, "analyzer", "Analyzer", { "Off", "Pre", "Post" }, 2, false);
-    prm::bl (p, "bypass", "Bypass", false);
+    prm::fromCore (p, Core::makeParams());
     return prm::done (p);
 }
 
@@ -42,23 +18,15 @@ EQProcessor::EQProcessor() : ModernProcessor ("Onno EQ", "OnnoEQ", stereoBuses()
     static const char* const names[] = { "on", "type", "freq", "gain", "q", "slope" };
     for (int b = 0; b < numBands; ++b)
         for (int k = 0; k < 6; ++k) bp[(size_t) b][(size_t) k] = raw (id (b, names[k]));
-    pOutput = raw ("output"); pAnalyzer = raw ("analyzer"); pBypass = raw ("bypass");
-    analog.attach (*this);
+    pAnalyzer = raw ("analyzer");
+    link.attach (apvts, core);
 }
 
-void EQProcessor::prepare (double sampleRate, int)
+void EQProcessor::prepare (double sampleRate, int blockSize)
 {
-    sr = sampleRate;
-    analyzer.prepare (sr);
-    analog.prepare (sr);
-    for (int b = 0; b < numBands; ++b)
-    {
-        cur[(size_t) b] = band (b);
-        stages[(size_t) b] = design (cur[(size_t) b], sr, filt[(size_t) b].data());
-        for (auto& f : filt[(size_t) b]) f.reset();
-    }
-    outGain.reset (sr, 0.03);
-    outGain.setCurrentAndTargetValue (dsp::db2a (pOutput->load()));
+    analyzer.prepare (sampleRate);
+    link.pull (core);
+    core.prepare (sampleRate, blockSize);
 }
 
 EQProcessor::Band EQProcessor::band (int b) const
@@ -74,75 +42,16 @@ EQProcessor::Band EQProcessor::band (int b) const
     return r;
 }
 
-int EQProcessor::design (const Band& bd, double sr, dsp::Biquad* st)
-{
-    const double f = std::min ((double) bd.freq, sr * 0.49);
-    switch (bd.type)
-    {
-        // Glocke, Shelves und High Cut analog-genau (keine Stauchung zur Nyquist-Frequenz hin)
-        case lowShelf:  st[0].matched (dsp::Biquad::Kind::lowShelf, sr, f, juce::jlimit (0.3f, 2.0f, bd.q), bd.gain); return 1;
-        case highShelf: st[0].matched (dsp::Biquad::Kind::highShelf, sr, f, juce::jlimit (0.3f, 2.0f, bd.q), bd.gain); return 1;
-        case notch:     st[0].notch (sr, f, bd.q); return 1;
-        case bandPass:  st[0].bandPass (sr, f, bd.q); return 1;
-        case lowCut:
-        case highCut:
-        {
-            // Butterworth-Stufen; Q hebt die Resonanz der steilsten Stufe an
-            static const double q12[] = { 0.7071 }, q24[] = { 0.5412, 1.3066 }, q48[] = { 0.5098, 0.6013, 0.9000, 2.5629 };
-            const double* qs = bd.slope == 0 ? q12 : (bd.slope == 1 ? q24 : q48);
-            const int n = bd.slope == 0 ? 1 : (bd.slope == 1 ? 2 : 4);
-            for (int i = 0; i < n; ++i)
-            {
-                const double q = i == n - 1 ? qs[i] * bd.q / 0.7071 : qs[i];
-                if (bd.type == lowCut) st[i].highPass (sr, f, q); else st[i].matched (dsp::Biquad::Kind::lowPass, sr, f, q);
-            }
-            return n;
-        }
-        default: st[0].matched (dsp::Biquad::Kind::peak, sr, f, bd.q, bd.gain); return 1;
-    }
-}
-
 void EQProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
     const int nch = std::min (2, buf.getNumChannels()), n = buf.getNumSamples();
     const int mode = (int) pAnalyzer->load();
     if (mode == 1) analyzer.push (buf.getReadPointer (0), nch > 1 ? buf.getReadPointer (1) : nullptr, n);
-
-    if (pBypass->load() < 0.5f)
-    {
-        for (int b = 0; b < numBands; ++b)
-        {
-            const Band nb = band (b);
-            auto& c = cur[(size_t) b];
-            if (nb != c)
-            {
-                const bool structural = nb.type != c.type || nb.slope != c.slope || nb.on != c.on;
-                c = nb;
-                stages[(size_t) b] = design (c, sr, filt[(size_t) b].data());
-                if (structural) for (auto& f : filt[(size_t) b]) f.reset();
-            }
-            if (! c.on) continue;
-            for (int s = 0; s < stages[(size_t) b]; ++s)
-            {
-                auto& f = filt[(size_t) b][(size_t) s];
-                for (int ch = 0; ch < nch; ++ch)
-                {
-                    auto* d = buf.getWritePointer (ch);
-                    for (int i = 0; i < n; ++i) d[i] = f.process (d[i], ch);
-                }
-            }
-        }
-        analog.process (buf.getWritePointer (0), buf.getWritePointer (nch > 1 ? 1 : 0), n, nch);
-        outGain.setTargetValue (dsp::db2a (pOutput->load()));
-        for (int i = 0; i < n; ++i)
-        {
-            const float g = outGain.getNextValue();
-            for (int ch = 0; ch < nch; ++ch) buf.getWritePointer (ch)[i] *= g;
-        }
-    }
+    link.pull (core);
+    core.process (buf.getWritePointer (0), buf.getWritePointer (nch > 1 ? 1 : 0), n, nch, nullptr, nullptr);
     if (mode == 2) analyzer.push (buf.getReadPointer (0), nch > 1 ? buf.getReadPointer (1) : nullptr, n);
-    atomicMax (outPeak, buf.getMagnitude (0, n));
+    atomicMax (outPeak, core.outPk);
 }
 
 juce::AudioProcessorEditor* EQProcessor::createEditor() { return new EQEditor (*this); }

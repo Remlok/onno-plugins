@@ -5,31 +5,28 @@
 #include "Common/Analyzer.h"
 #include "Common/Analog.h"
 #include "Common/OnnoDSP.h"
+#include "Core/EQCore.h"
 
 class EQProcessor : public onno::ModernProcessor
 {
 public:
-    static constexpr int numBands = 8;
-    enum Type { lowCut = 0, lowShelf, bell, notch, highShelf, highCut, bandPass };
+    using Core = onno::core::EQCore;
+    static constexpr int numBands = Core::numBands;
+    enum Type { lowCut = Core::lowCut, lowShelf, bell, notch, highShelf, highCut, bandPass };
     static const juce::StringArray typeNames, typeShort;
-
-    struct Band
-    {
-        bool on = false; int type = bell; float freq = 1000, gain = 0, q = 1; int slope = 0;
-        bool operator!= (const Band& o) const { return on != o.on || type != o.type || freq != o.freq || gain != o.gain || q != o.q || slope != o.slope; }
-    };
+    using Band = Core::Band;
 
     EQProcessor();
     void prepare (double sampleRate, int) override;
     void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override;
 
-    static juce::String id (int b, const char* p) { return "b" + juce::String (b + 1) + p; }
+    static juce::String id (int b, const char* p) { return juce::String (Core::id (b, p)); }
     Band band (int b) const;
-    static bool hasGain (int type) { return type == lowShelf || type == bell || type == highShelf; }
-    static bool isCut (int type) { return type == lowCut || type == highCut; }
+    static bool hasGain (int type) { return Core::hasGain (type); }
+    static bool isCut (int type) { return Core::isCut (type); }
     // Filterstufen eines Bandes entwerfen (Rückgabe: Anzahl Stufen)
-    static int design (const Band&, double sr, onno::dsp::Biquad* st);
+    static int design (const Band& b, double sr, onno::dsp::Biquad* st) { return Core::design (b, sr, st); }
 
     onno::Analyzer analyzer;
 
@@ -37,13 +34,9 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout layout();
     enum { pOn, pType, pFreq, pGain, pQ, pSlope };
     std::array<std::array<std::atomic<float>*, 6>, numBands> bp {};
-    std::atomic<float> *pOutput, *pAnalyzer, *pBypass;
-    std::array<std::array<onno::dsp::Biquad, 4>, numBands> filt;
-    std::array<int, numBands> stages {};
-    std::array<Band, numBands> cur;
-    double sr = 48000;
-    juce::SmoothedValue<float> outGain;
-    onno::Analog analog;
+    std::atomic<float> *pAnalyzer;
+    Core core;
+    onno::CoreLink link;
 };
 
 class EQEditor : public onno::ModernEditor

@@ -5,6 +5,7 @@
 // Presets (Werk + eigene Dateien) und Lautheitsausgleich (MATCH).
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "Common/OnnoDSP.h"
+#include "Core/Core.h"
 #include <atomic>
 
 namespace onno
@@ -86,91 +87,46 @@ namespace prm
     }
 
     inline juce::AudioProcessorValueTreeState::ParameterLayout done (Layout& p) { return { p.begin(), p.end() }; }
-}
 
-// Lautheitsausgleich: misst Ein- und Ausgang K-gewichtet (wie LUFS, ~1 s Fenster) und gleicht den
-// Ausgang auf die Eingangslautheit an. Damit klingt keine Einstellung nur deshalb besser, weil sie lauter ist.
-// Pro A/B-Platz wird das gemessene Verhältnis gemerkt, damit ein Umschalten sofort richtig sitzt.
-class LoudnessMatch
-{
-public:
-    void prepare (double sampleRate)
+    // Parameter aus der Tabelle eines Klang-Kerns anlegen (gleiche IDs, Bereiche und Standardwerte)
+    inline void fromCore (Layout& p, const core::ParamList& defs)
     {
-        sr = sampleRate;
-        for (auto* f : { &inShelf, &outShelf }) f->highShelf (sr, std::min (1500.0, sr * 0.4), 0.7, 4.0);
-        for (auto* f : { &inHp, &outHp }) f->highPass (sr, 60.0, 0.5);
-        for (auto* f : { &inShelf, &outShelf, &inHp, &outHp }) f->reset();
-        msIn = msOut = 0;
-        gain = 1.0f;
-    }
-
-    void measureIn (const juce::AudioBuffer<float>& b, int nch)
-    {
-        blockIn = energy (b, nch, inShelf, inHp);
-    }
-
-    // slot = aktiver A/B-Platz; frozen = Bypass aktiv (dann nichts messen, Verstärkung 1)
-    void apply (juce::AudioBuffer<float>& b, int nch, bool on, bool frozen, int slot)
-    {
-        const int n = b.getNumSamples();
-        if (n == 0 || nch == 0) return;
-        const double blockOut = energy (b, nch, outShelf, outHp);
-        const bool jump = slot != lastSlot || frozen != lastFrozen;     // Umschalten: sofort richtig, nicht gleiten
-        lastFrozen = frozen;
-        if (slot != lastSlot)
+        for (auto& d : defs)
         {
-            // Gedächtnis des neuen Platzes übernehmen: Ausgangsmessung passend zum gemerkten Verhältnis setzen
-            lastSlot = slot;
-            const float r = ratio[slot & 1].load();
-            if (r > 0 && msIn > 0) msOut = msIn / ((double) r * r);
-        }
-        if (! frozen)
-        {
-            const double a = std::exp (-(double) n / (sr * 1.0));
-            msIn = a * msIn + (1 - a) * blockIn;
-            msOut = a * msOut + (1 - a) * blockOut;
-        }
-        float target = 1.0f;
-        if (msIn > 1.0e-7 && msOut > 1.0e-10)      // unter -70 dBFS nichts nachführen, Wert halten
-        {
-            const float r = (float) juce::jlimit (0.063, 15.85, std::sqrt (msIn / msOut));   // ±24 dB
-            if (! frozen) ratio[slot & 1] = r;
-            target = r;
-        }
-        else if (ratio[slot & 1].load() > 0) target = ratio[slot & 1].load();
-        if (! on || frozen) target = 1.0f;
-        const float g0 = gain;
-        gain = jump ? target : target + (gain - target) * (float) std::exp (-(double) n / (sr * 0.08));
-        if (std::abs (g0 - 1.0f) < 1.0e-6f && std::abs (gain - 1.0f) < 1.0e-6f) return;
-        for (int c = 0; c < nch; ++c) b.applyGainRamp (c, 0, n, g0, gain);
-    }
-
-    float currentGainDb() const { return dsp::a2db (gain); }
-    std::atomic<float> ratio[2] { { 0.0f }, { 0.0f } };
-
-private:
-    double energy (const juce::AudioBuffer<float>& b, int nch, dsp::Biquad& shelf, dsp::Biquad& hp)
-    {
-        double e = 0;
-        const int n = b.getNumSamples();
-        for (int c = 0; c < std::min (nch, 2); ++c)
-        {
-            const float* x = b.getReadPointer (c);
-            for (int i = 0; i < n; ++i)
+            const juce::String id (d.id), name (d.name), unit (d.unit);
+            switch (d.kind)
             {
-                const float y = hp.process (shelf.process (x[i], c), c);
-                e += (double) y * y;
+                case core::ParamDef::lin: lin (p, id, name, d.min, d.max, d.def, unit); break;
+                case core::ParamDef::log: lg (p, id, name, d.min, d.max, d.def, unit); break;
+                case core::ParamDef::toggle: bl (p, id, name, d.def > 0.5f); break;
+                case core::ParamDef::choice:
+                {
+                    juce::StringArray items;
+                    for (auto& c : d.choices) items.add (juce::String (c));
+                    ch (p, id, name, items, (int) d.def, d.automatable);
+                    break;
+                }
             }
         }
-        return n > 0 ? e / ((double) n * std::max (1, std::min (nch, 2))) : 0.0;
     }
+}
 
-    double sr = 48000, msIn = 0, msOut = 0, blockIn = 0;
-    float gain = 1.0f;
-    int lastSlot = 0;
-    bool lastFrozen = false;
-    dsp::Biquad inShelf, outShelf, inHp, outHp;
+// Verbindet die Parameter eines Plugins mit den Werten eines Klang-Kerns (Zeiger einmal holen, pro Block kopieren)
+struct CoreLink
+{
+    std::vector<std::atomic<float>*> raw;
+    void attach (juce::AudioProcessorValueTreeState& s, const core::PluginCore& c)
+    {
+        for (auto& d : c.params()) raw.push_back (s.getRawParameterValue (juce::String (d.id)));
+    }
+    void pull (core::PluginCore& c) const
+    {
+        for (size_t i = 0; i < raw.size(); ++i) c.v[i] = raw[i]->load();
+    }
 };
+
+// Lautheitsausgleich (MATCH): im Klang-Kern, damit VST und Browser gleich rechnen
+using LoudnessMatch = core::LoudnessMatch;
 
 class ModernProcessor : public juce::AudioProcessor
 {
@@ -222,9 +178,9 @@ public:
     void processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer& midi) final
     {
         const int nch = std::min (2, getMainBusNumOutputChannels());
-        match.measureIn (buf, nch);
+        match.measureIn (buf.getArrayOfReadPointers(), nch, buf.getNumSamples());
         process (buf, midi);
-        match.apply (buf, nch, matchOn.load(), pBypassBase != nullptr && pBypassBase->load() > 0.5f, abSlot.load());
+        match.apply (buf.getArrayOfWritePointers(), nch, buf.getNumSamples(), matchOn.load(), pBypassBase != nullptr && pBypassBase->load() > 0.5f, abSlot.load());
     }
 
     void releaseResources() override {}

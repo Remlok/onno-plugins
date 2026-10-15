@@ -6,43 +6,22 @@ using juce::String;
 juce::AudioProcessorValueTreeState::ParameterLayout CompProcessor::layout()
 {
     prm::Layout p;
-    prm::lin (p, "thr", "Threshold", -60, 0, -18, "dB");
-    prm::lg (p, "ratio", "Ratio", 1, 100, 4, ":1");
-    prm::lin (p, "knee", "Knee", 0, 24, 3, "dB");
-    prm::lg (p, "attack", "Attack", 0.1f, 200, 5, "ms");
-    prm::lg (p, "release", "Release", 5, 2000, 100, "ms");
-    prm::lin (p, "lookahead", "Lookahead", 0, 20, 0, "ms");
-    prm::lin (p, "rms", "RMS Size", 0, 100, 0, "ms");
-    prm::lg (p, "scHpf", "Detector HPF", 20, 1000, 20, "Hz");
-    prm::lin (p, "mix", "Mix", 0, 100, 100, "%");
-    prm::lin (p, "output", "Output", -24, 24, 0, "dB");
-    prm::ch (p, "source", "Detector Input", { "Main", "Sidechain" }, 0);
-    prm::bl (p, "autoGain", "Auto Makeup", false);
-    prm::bl (p, "limit", "Limit Output", false);
-    Analog::addParams (p);
-    prm::bl (p, "bypass", "Bypass", false);
+    prm::fromCore (p, core::CompCore::makeParams());
     return prm::done (p);
 }
 
 CompProcessor::CompProcessor() : ModernProcessor ("Onno Comp", "OnnoComp", stereoBuses (true), layout())
 {
-    pThr = raw ("thr"); pRatio = raw ("ratio"); pKnee = raw ("knee"); pAtt = raw ("attack"); pRel = raw ("release");
-    pLa = raw ("lookahead"); pRms = raw ("rms"); pHpf = raw ("scHpf"); pMix = raw ("mix"); pOut = raw ("output");
-    pSrc = raw ("source"); pAuto = raw ("autoGain"); pLimit = raw ("limit"); pBypass = raw ("bypass");
-    analog.attach (*this);
+    pThr = raw ("thr"); pRatio = raw ("ratio"); pKnee = raw ("knee");
+    link.attach (apvts, core);
 }
 
-void CompProcessor::prepare (double sampleRate, int)
+void CompProcessor::prepare (double sampleRate, int blockSize)
 {
-    sr = sampleRate;
-    for (auto& d : dl) d.assign ((size_t) (0.021 * sr) + 2, 0.0f);
-    dlPos = 0; env = 0; ms = 0; hpfFreq = -1;
-    hpf.reset();
-    analog.prepare (sr);
-    la = (int) std::round (pLa->load() * 0.001 * sr);
-    setLatencySamples (la);
-    outGain.reset (sr, 0.03); outGain.setCurrentAndTargetValue (dsp::db2a (pOut->load()));
-    mixS.reset (sr, 0.03); mixS.setCurrentAndTargetValue (pMix->load() * 0.01f);
+    link.pull (core);
+    core.prepare (sampleRate, blockSize);
+    reportedLatency = core.latency();
+    setLatencySamples (reportedLatency);
 }
 
 float CompProcessor::autoMakeup() const
@@ -57,74 +36,15 @@ void CompProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
     const int n = buf.getNumSamples();
     const int nch = std::min (2, getMainBusNumInputChannels());
     if (nch == 0) return;
-
-    const int newLa = juce::jlimit (0, (int) dl[0].size() - 2, (int) std::round (pLa->load() * 0.001 * sr));
-    if (newLa != la) { la = newLa; setLatencySamples (la); }
-
-    const float thr = pThr->load(), ratio = std::max (1.0f, pRatio->load()), knee = pKnee->load();
-    const float att = dsp::coef (pAtt->load(), sr), rel = dsp::coef (pRel->load(), sr);
-    const float rmsMs = pRms->load();
-    const float rmsC = rmsMs > 0.05f ? dsp::coef (rmsMs, sr) : 0.0f;
-    const float hf = pHpf->load();
-    if (std::abs (hf - hpfFreq) > 0.01f) { hpfFreq = hf; hpf.highPass (sr, std::min ((double) hf, sr * 0.45), 0.7071); }
-    const bool useHpf = hf > 20.5f;
-    const bool bypass = pBypass->load() > 0.5f;
-    const float makeup = pAuto->load() > 0.5f ? autoMakeup() : 0.0f;
-    const bool limit = pLimit->load() > 0.5f;
-    outGain.setTargetValue (dsp::db2a (pOut->load()));
-    mixS.setTargetValue (pMix->load() * 0.01f);
-    analog.beginBlock();
-
-    const float* scL = nullptr; const float* scR = nullptr;
-    if (pSrc->load() > 0.5f) { scL = sidechain (buf, 0); scR = sidechain (buf, 1); }
-
-    float* L = buf.getWritePointer (0);
-    float* R = buf.getWritePointer (nch > 1 ? 1 : 0);
-    const int len = (int) dl[0].size();
-    float inPk = 0, outPk = 0, grMin = 0, detMax = 0;
-
-    for (int i = 0; i < n; ++i)
-    {
-        const float xl = L[i], xr = R[i];
-        float dL = scL ? scL[i] : xl, dR = scR ? scR[i] : xr;
-        if (useHpf) { dL = hpf.process (dL, 0); dR = hpf.process (dR, 1); }
-        float lvl = std::max (std::abs (dL), std::abs (dR));
-        if (rmsC > 0) { ms = rmsC * ms + (1 - rmsC) * lvl * lvl; lvl = std::sqrt (ms); }
-        detMax = std::max (detMax, lvl);
-        const float xdb = dsp::a2db (lvl);
-        const float target = gainComputer (xdb, thr, ratio, knee) - xdb;
-        env = target < env ? att * env + (1 - att) * target : rel * env + (1 - rel) * target;
-
-        // Lookahead: Audio verzögern
-        dl[0][(size_t) dlPos] = xl; dl[1][(size_t) dlPos] = xr;
-        int rp = dlPos - la; if (rp < 0) rp += len;
-        const float yl = dl[0][(size_t) rp], yr = dl[1][(size_t) rp];
-        if (++dlPos >= len) dlPos = 0;
-
-        float g = 1.0f;
-        const float og = outGain.getNextValue(), mx = mixS.getNextValue();
-        if (! bypass)
-        {
-            g = (mx * dsp::db2a (env + makeup) + (1 - mx)) * og;
-            grMin = std::min (grMin, env);
-        }
-        float ol = yl * g, orr = yr * g;
-        if (! bypass && analog.active())
-        {
-            // Färbung nach Kompression und Mix, vor dem Limit
-            analog.advance();
-            ol = analog.tick (ol, 0); orr = analog.tick (orr, 1);
-        }
-        if (limit && ! bypass) { ol = juce::jlimit (-1.0f, 1.0f, ol); orr = juce::jlimit (-1.0f, 1.0f, orr); }
-        L[i] = ol;
-        if (nch > 1) R[i] = orr;
-        inPk = std::max (inPk, std::max (std::abs (xl), std::abs (xr)));
-        outPk = std::max (outPk, std::max (std::abs (ol), std::abs (orr)));
-    }
-    atomicMax (inPeak, inPk);
-    atomicMax (outPeak, outPk);
-    atomicMin (grPeak, grMin);
-    atomicMax (detPeak, detMax);
+    link.pull (core);
+    const float* scL = sidechain (buf, 0);
+    const float* scR = sidechain (buf, 1);
+    core.process (buf.getWritePointer (0), buf.getWritePointer (nch > 1 ? 1 : 0), n, nch, scL, scR);
+    if (core.latency() != reportedLatency) { reportedLatency = core.latency(); setLatencySamples (reportedLatency); }
+    atomicMax (inPeak, core.inPk);
+    atomicMax (outPeak, core.outPk);
+    atomicMin (grPeak, core.grMin);
+    atomicMax (detPeak, core.detPk);
 }
 
 juce::AudioProcessorEditor* CompProcessor::createEditor() { return new CompEditor (*this); }

@@ -4,6 +4,7 @@
 #include "Common/ModernEditor.h"
 #include "Common/OnnoDSP.h"
 #include "Common/Analog.h"
+#include "Core/CompCore.h"
 
 class CompProcessor : public onno::ModernProcessor
 {
@@ -19,14 +20,10 @@ public:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout layout();
-    std::atomic<float> *pThr, *pRatio, *pKnee, *pAtt, *pRel, *pLa, *pRms, *pHpf, *pMix, *pOut, *pSrc, *pAuto, *pLimit, *pBypass;
-    double sr = 48000;
-    std::vector<float> dl[2];
-    int dlPos = 0, la = -1;
-    float env = 0, ms = 0, hpfFreq = -1;
-    onno::dsp::Biquad hpf;
-    juce::SmoothedValue<float> outGain, mixS;
-    onno::Analog analog;
+    onno::core::CompCore core;
+    onno::CoreLink link;
+    std::atomic<float> *pThr, *pRatio, *pKnee;
+    int reportedLatency = -1;
 };
 
 class CompEditor : public onno::ModernEditor
