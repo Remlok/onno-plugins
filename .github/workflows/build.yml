@@ -15,6 +15,7 @@ jobs:
           - os: macos-latest
             name: Mac
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +23,7 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Bauen
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel 3
 
       - name: Prüfen mit pluginval
         shell: bash
