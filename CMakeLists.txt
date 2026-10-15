@@ -122,13 +122,15 @@ set(ONNO_SUITE_SOURCES
     Source/Gate/OnnoGate.cpp
     Source/Delay/OnnoDelay.cpp
     Source/MultiComp/OnnoMultiComp.cpp
-    Source/Limit/OnnoLimit.cpp)
+    Source/Limit/OnnoLimit.cpp
+    Source/Tame/OnnoTame.cpp)
 onno_modern_plugin(OnnoEQ "Onno EQ" Oeq1 "Fx;EQ" Source/EQ/OnnoEQ.cpp)
 onno_modern_plugin(OnnoComp "Onno Comp" Ocp1 "Fx;Dynamics" Source/Comp/OnnoComp.cpp)
 onno_modern_plugin(OnnoGate "Onno Gate" Ogt1 "Fx;Dynamics" Source/Gate/OnnoGate.cpp)
 onno_modern_plugin(OnnoDelay "Onno Delay" Odl1 "Fx;Delay" Source/Delay/OnnoDelay.cpp)
 onno_modern_plugin(OnnoMultiComp "Onno MultiComp" Omc1 "Fx;Dynamics" Source/MultiComp/OnnoMultiComp.cpp)
 onno_modern_plugin(OnnoLimit "Onno Limit" Olm1 "Fx;Dynamics" Source/Limit/OnnoLimit.cpp)
+onno_modern_plugin(OnnoTame "Onno Tame" Otm1 "Fx;EQ" Source/Tame/OnnoTame.cpp)
 
 if(ONNO_TESTS)
     juce_add_console_app(OnnoTests PRODUCT_NAME "OnnoTests")

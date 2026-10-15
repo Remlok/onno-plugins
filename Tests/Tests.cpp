@@ -12,6 +12,7 @@
 #include "Delay/OnnoDelay.h"
 #include "MultiComp/OnnoMultiComp.h"
 #include "Limit/OnnoLimit.h"
+#include "Tame/OnnoTame.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <cstdio>
 #include <functional>
@@ -605,6 +606,67 @@ static void testAnalog()
     }
 }
 
+// Rauschen mit eingebauter Resonanz (+12-dB-Glocke bei 2,5 kHz) durch Onno Tame;
+// liefert Pegeländerung im Resonanzband und im Breitband (Bandpass 300 Hz) in dB
+static std::pair<float, float> tameNoise (std::function<void (TameProcessor&)> setup, float bellDb)
+{
+    TameProcessor p; p.prepareToPlay (48000, 512);
+    setup (p);
+    onno::dsp::Biquad bell, bpRes[2], bpWide[2];
+    bell.peak (48000, 2500, 8, bellDb);
+    for (int i = 0; i < 2; ++i) { bpRes[i].bandPass (48000, 2500, 8); bpWide[i].bandPass (48000, 300, 0.7); }
+    juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m; juce::Random rnd (7);
+    double ri = 0, ro = 0, wi = 0, wo = 0;
+    for (int k = 0; k < 400; ++k)
+    {
+        for (int i = 0; i < 512; ++i)
+        {
+            const float v = bell.process (0.1f * (rnd.nextFloat() * 2 - 1), 0);
+            b.setSample (0, i, v); b.setSample (1, i, v);
+            const float r = bpRes[0].process (v, 0), w = bpWide[0].process (v, 0);
+            if (k >= 100) { ri += r * r; wi += w * w; }
+        }
+        p.processBlock (b, m);
+        for (int i = 0; i < 512; ++i)
+        {
+            const float v = b.getSample (0, i);
+            const float r = bpRes[1].process (v, 0), w = bpWide[1].process (v, 0);
+            if (k >= 100) { ro += r * r; wo += w * w; }
+        }
+    }
+    return { (float) (10 * std::log10 (ro / ri)), (float) (10 * std::log10 (wo / wi)) };
+}
+
+static void testTame (const juce::File& dir)
+{
+    std::puts ("--- Onno Tame ---");
+    using F = std::function<void (TameProcessor&)>;
+    {
+        TameProcessor p; p.prepareToPlay (48000, 512);
+        checkBool ("Latenz 1024 Samples bei 48 kHz", p.getLatencySamples() == 1024);
+    }
+    auto off = F ([] (TameProcessor& p) { setParam (p.apvts, "depth", 0); });
+    for (float f : { 100.0f, 1000.0f, 8000.0f })
+        check (("Depth 0: " + juce::String (f) + " Hz unverändert").toRawUTF8(), measure<TameProcessor> (f, 0.25f, off), 0.0f, 0.02f);
+    check ("Sinus 3 kHz (reine Resonanz) wird gezähmt", measure<TameProcessor> (3000, 0.25f, F ([] (TameProcessor&) {})), -12.0f, 9.0f);
+    check ("Sinus 50 Hz ausserhalb Bereich bleibt", measure<TameProcessor> (50, 0.25f, F ([] (TameProcessor&) {})), 0.0f, 0.3f);
+    auto flat = tameNoise (F ([] (TameProcessor&) {}), 0);
+    std::printf ("     weisses Rauschen: 2,5 kHz %+.2f dB, 300 Hz %+.2f dB\n", flat.first, flat.second);
+    check ("Weisses Rauschen bleibt (2,5 kHz)", flat.first, 0.0f, 1.5f);
+    auto res = tameNoise (F ([] (TameProcessor& p) { setParam (p.apvts, "depth", 80); setParam (p.apvts, "sel", 2); }), 12);
+    std::printf ("     Resonanz +12 dB: 2,5 kHz %+.2f dB, 300 Hz %+.2f dB\n", res.first, res.second);
+    checkBool ("Resonanz im Rauschen um mehr als 5 dB gedrückt", res.first < -5.0f);
+    check ("Breitband daneben bleibt", res.second, 0.0f, 1.5f);
+    {   // Delta bei Depth 0 ist still
+        TameProcessor p; p.prepareToPlay (48000, 512);
+        setParam (p.apvts, "depth", 0); setParam (p.apvts, "delta", 1);
+        juce::AudioBuffer<float> b (2, 512); juce::MidiBuffer m; juce::Random rnd (8); long t = 0; float mx = 0;
+        for (int k = 0; k < 100; ++k) { fill (b, t, 440, 0.3f, 0.1f, rnd); p.processBlock (b, m); if (k > 10) mx = std::max (mx, b.getMagnitude (0, 512)); }
+        checkBool ((juce::String ("Delta bei Depth 0 still (Spitze ") + juce::String (mx, 5) + ")").toRawUTF8(), mx < 1.0e-4f);
+    }
+    render<TameProcessor, TameEditor> (dir, "onno-tame.png", 900, 430, [] (TameProcessor& p) { p.applyProfile (1); }, -1, 120, true);
+}
+
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -625,6 +687,7 @@ int main (int argc, char** argv)
     if (want ("MultiComp")) testMultiComp (dir);
     if (want ("Limit")) testLimit (dir);
     if (want ("Analog")) testAnalog();
+    if (want ("Tame")) testTame (dir);
     std::printf ("\n%s (%d Fehler)\n", failures == 0 ? "ALLE TESTS OK" : "TESTS FEHLGESCHLAGEN", failures);
     return failures == 0 ? 0 : 1;
 }

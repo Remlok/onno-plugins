@@ -19,6 +19,12 @@ Eigene Audio-Plugins (VST3, auf dem Mac auch AU) mit C++ und JUCE 8. Sie laufen 
 | Onno MultiComp | ReaXcomp | 4 Bänder mit Linkwitz-Riley-Weichen (Summe flach), je Band Threshold/Ratio/Attack/Release/Gain, Solo, Band aus; Analyzer und Gain Reduction pro Band |
 | Onno Limit | ReaLimit | Brickwall mit 1,5 ms Lookahead: Threshold, Ceiling, Release; keine Spitze über der Ceiling |
 
+### Eigene Werkzeuge
+
+| Plugin | Inhalt |
+|---|---|
+| Onno Tame | Spektraler Resonanz-Zähmer (Idee: soothe): findet Frequenzen, die aus der eigenen spektralen Hüllkurve herausragen, und drückt sie dynamisch, Bin für Bin. Depth, Sharpness, Selectivity, Attack, Release, Bereich (Ränder im Display ziehen), Empfindlichkeitskurve mit 4 Knoten, 8 Metal-Profile (Rhythm Gtr, Lead Gtr, Scream, Clean Vox, Snare, Overheads, Bass, Mix Bus), Delta (nur das Entfernte hören), Stereo Link, Mix. Latenz 1024 Samples bei 44,1/48 kHz, wird dem Host gemeldet. |
+
 **Analoge Klangfarbe** (Leiste ANALOG unten in allen sechs): CLEAN (aus), BRIT (Übertrager, dichte Bässe, weiche Höhen), CONSOLE (sauber, ungerade Obertöne, etwas Glanz), TUBE (Röhre, warme geradzahlige Obertöne), FET (1176-artig, bissig, Präsenz). DRIVE bestimmt, wie stark gesättigt wird; bei 35 % liegt der Klirr bei -12 dBFS um 2-4 %, leise Signale bleiben im Pegel gleich. Im Delay läuft jede Wiederholung erneut durch die Sättigung wie bei einem Bandecho, im Limit sitzt sie vor dem Limiter.
 
 Alle sechs teilen sich eine Oberfläche: oben die große Anzeige zum Anfassen, unten die Regler. Ziehen (Shift = fein), Mausrad und Doppelklick (Standardwert) funktionieren überall gleich. Das Fenster lässt sich frei skalieren.
