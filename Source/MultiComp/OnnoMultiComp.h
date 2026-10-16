@@ -5,17 +5,19 @@
 #include "Common/Analyzer.h"
 #include "Common/OnnoDSP.h"
 #include "Common/Analog.h"
+#include "Core/MultiCompCore.h"
 
 class MultiCompProcessor : public onno::ModernProcessor
 {
 public:
-    static constexpr int numBands = 4;
+    static constexpr int numBands = onno::core::MultiCompCore::numBands;
     static const char* const bandNames[numBands];
 
     MultiCompProcessor();
     void prepare (double sampleRate, int) override;
     void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override;
+    std::vector<FactoryPreset> factoryPresets() const override { return fromCore (core.factoryPresets()); }
 
     static juce::String id (int b, const char* p) { return "b" + juce::String (b + 1) + p; }
     // Weichenfrequenzen mit Mindestabstand
@@ -26,17 +28,10 @@ public:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout layout();
-    enum { pThr, pRatio, pAtt, pRel, pGain, pSolo, pByp, numP };
-    std::array<std::array<std::atomic<float>*, numP>, numBands> bp {};
-    std::atomic<float> *pX1, *pX2, *pX3, *pMix, *pOut, *pBypass;
-    double sr = 48000;
-    float fx1 = -1, fx2 = -1, fx3 = -1;
-    // Weichen: LR4 = zwei Butterworth-Stufen
-    onno::dsp::Biquad lp2[2], hp2[2], ap3, lp1[2], hp1[2], ap1, lp3[2], hp3[2];
-    std::array<float, numBands> env {};
-    std::array<juce::SmoothedValue<float>, numBands> makeup;
-    juce::SmoothedValue<float> outS, mixS;
-    onno::Analog analog;
+    std::atomic<float> *pX1, *pX2, *pX3;   // nur für crossovers() (GUI-Thread)
+    std::atomic<double> sr { 48000.0 };
+    onno::core::MultiCompCore core;
+    onno::CoreLink link;
 };
 
 class MultiCompEditor : public onno::ModernEditor

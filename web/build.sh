@@ -6,6 +6,6 @@ cd "$(dirname "$0")"
 mkdir -p dist
 em++ -O3 -std=c++17 -fno-exceptions -fno-rtti -I ../Source onno_wasm.cpp \
   -sSTANDALONE_WASM=1 --no-entry -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=4mb -sSTACK_SIZE=256kb \
-  -sEXPORTED_FUNCTIONS=_onno_kinds,_onno_kind_id,_onno_params_json,_onno_create,_onno_destroy,_onno_param_count,_onno_set,_onno_get,_onno_buffer,_onno_latency,_onno_process,_onno_meter,_onno_eq_response \
+  -sEXPORTED_FUNCTIONS=_onno_kinds,_onno_kind_id,_onno_params_json,_onno_create,_onno_destroy,_onno_param_count,_onno_set,_onno_get,_onno_buffer,_onno_latency,_onno_process,_onno_meter,_onno_eq_response,_onno_presets_json,_onno_display_len,_onno_display,_onno_display_reset,_onno_set_tempo,_onno_tail \
   -o dist/onno-dsp.wasm
 ls -l dist/onno-dsp.wasm

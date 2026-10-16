@@ -35,6 +35,19 @@ public:
 
     int latency() const override { return la < 0 ? 0 : la; }
 
+    std::vector<Preset> factoryPresets() const override
+    {
+        return {
+            { "Gesang", "Gesang", { { "thr", -24 }, { "ratio", 4 }, { "knee", 6 }, { "attack", 5 }, { "release", 80 }, { "autoGain", 1 } } },
+            { "Shouts", "Gesang", { { "thr", -28 }, { "ratio", 8 }, { "attack", 2 }, { "release", 60 }, { "autoGain", 1 }, { "analog", 4 }, { "drive", 45 } } },
+            { "Bass glatt", "Metal", { { "thr", -20 }, { "ratio", 6 }, { "attack", 10 }, { "release", 120 }, { "rms", 10 }, { "autoGain", 1 } } },
+            { "Drum-Bus Punch", "Metal", { { "thr", -16 }, { "ratio", 4 }, { "attack", 30 }, { "release", 100 }, { "mix", 60 }, { "analog", 1 }, { "drive", 40 } } },
+            { "Snare Knall", "Metal", { { "thr", -20 }, { "ratio", 5 }, { "attack", 15 }, { "release", 60 } } },
+            { "Gitarren-Kleber", "Metal", { { "thr", -14 }, { "ratio", 2 }, { "knee", 6 }, { "attack", 30 }, { "release", 200 } } },
+            { "Brickwall", "", { { "thr", -6 }, { "ratio", 100 }, { "attack", 0.1f }, { "release", 50 }, { "lookahead", 2 }, { "limit", 1 } } },
+        };
+    }
+
     float autoMakeup() const
     {
         // die halbe Reduktion bei 0 dBFS ausgleichen

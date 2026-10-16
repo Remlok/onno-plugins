@@ -5,45 +5,38 @@
 #include "Common/ModernProcessor.h"
 #include "Common/ModernEditor.h"
 #include "Common/Analyzer.h"
-#include <juce_dsp/juce_dsp.h>
+#include "Core/TameCore.h"
 
 class TameProcessor : public onno::ModernProcessor
 {
 public:
-    static constexpr int numNodes = 4, numDisplayBands = 160;
+    static constexpr int numNodes = onno::core::TameCore::numNodes, numDisplayBands = onno::core::TameCore::numDisplayBands;
     static const juce::StringArray profileNames;
 
     TameProcessor();
     void prepare (double sampleRate, int) override;
     void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override;
+    // Werkspresets = Profile (wie die Profil-Knöpfe); Mix, Output, Delta und Link bleiben dabei stehen
+    std::vector<FactoryPreset> factoryPresets() const override { return fromCore (core.factoryPresets()); }
+    bool keepOnPreset (const juce::String& id) const override { return id == "mix" || id == "output" || id == "delta" || id == "link"; }
 
     void applyProfile (int p);
     static juce::String nid (int n, const char* p) { return "n" + juce::String (n + 1) + p; }
     // Empfindlichkeit (dB) bei Frequenz f aus den vier Knoten
     float sensitivityAt (float f) const;
-    static float displayBandFreq (int b) { return 20.0f * std::pow (1000.0f, (b + 0.5f) / numDisplayBands); }
+    static float displayBandFreq (int b) { return onno::core::TameCore::displayBandFreq (b); }
 
     onno::Analyzer analyzer;
     std::array<std::atomic<float>, numDisplayBands> grDisplay;   // Reduktion je Anzeigeband (dB, min)
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout layout();
-    void processFrame();
-    void computeGains (const float* powerDb, float* gainDb, std::vector<float>& state);
 
-    std::atomic<float> *pDepth, *pSharp, *pSel, *pAtt, *pRel, *pLow, *pHigh, *pMix, *pOut, *pDelta, *pLink, *pBypass;
+    onno::core::TameCore core;
+    onno::CoreLink link;
     std::array<std::atomic<float>*, numNodes> pNodeF {}, pNodeG {};
-
-    double sr = 48000;
-    int N = 1024, hop = 256, order = 10, pos = 0, hopCount = 0, nch = 2;
-    std::unique_ptr<juce::dsp::FFT> fft;
-    std::vector<float> win, inRing[2], outAcc[2], dry[2], work[2], pdb[2], gdb[2], state[2], det[2], sens, prefix;
-    void detect (int c, const std::vector<float>& power);
-    std::vector<int> lo, hi;
-    float lastWidth = -1;
-    std::array<float, numDisplayBands> dispMin {};
-    juce::SmoothedValue<float> mixS, outS;
+    int reportedLatency = -1;
 };
 
 class TameEditor : public onno::ModernEditor

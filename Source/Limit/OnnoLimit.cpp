@@ -6,67 +6,21 @@ using juce::String;
 juce::AudioProcessorValueTreeState::ParameterLayout LimitProcessor::layout()
 {
     prm::Layout p;
-    prm::lin (p, "thr", "Threshold", -24, 0, 0, "dB");
-    prm::lin (p, "ceiling", "Ceiling", -12, 0, -0.3f, "dB");
-    prm::lg (p, "release", "Release", 1, 1000, 60, "ms");
-    prm::bl (p, "tp", "True Peak", true);
-    Analog::addParams (p);
-    prm::bl (p, "bypass", "Bypass", false);
+    prm::fromCore (p, core::LimitCore::makeParams());
     return prm::done (p);
 }
 
 LimitProcessor::LimitProcessor() : ModernProcessor ("Onno Limit", "OnnoLimit", stereoBuses(), layout())
 {
-    pThr = raw ("thr"); pCeil = raw ("ceiling"); pRel = raw ("release"); pBypass = raw ("bypass"); pTp = raw ("tp");
-    analog.attach (*this);
-    // Interpolationsfilter: gefensterter Sinc, Phase p liegt p/8 Sample hinter dem Sample tpDelay
-    for (int ph = 1; ph < tpPhases; ++ph)
-    {
-        double sum = 0;
-        for (int k = 0; k < tpTaps; ++k)
-        {
-            const double d = (tpTaps - 1 - tpDelay) + ph / (double) tpPhases - k;   // Abstand zum Stützpunkt
-            const double x = juce::MathConstants<double>::pi * d;
-            const double sinc = std::abs (d) < 1e-9 ? 1.0 : std::sin (x) / x;
-            const double w = 0.5 + 0.5 * std::cos (juce::MathConstants<double>::pi * d / (tpTaps * 0.5 + 0.5));
-            tpH[ph][k] = (float) (sinc * w);
-            sum += sinc * w;
-        }
-        for (int k = 0; k < tpTaps; ++k) tpH[ph][k] = (float) (tpH[ph][k] / sum);
-    }
+    link.attach (apvts, core);
 }
 
-void LimitProcessor::prepare (double sampleRate, int)
+void LimitProcessor::prepare (double sampleRate, int blockSize)
 {
-    sr = sampleRate;
-    L = std::max (2, (int) std::round (0.0015 * sr));
-    for (auto& d : dl) d.assign ((size_t) (L + 1 + tpDelay), 0.0f);
-    for (auto& h : hist) std::fill (std::begin (h), std::end (h), 0.0f);
-    histPos = 0;
-    box.assign ((size_t) L, 1.0f);
-    boxSum = L;
-    dqv.assign ((size_t) L + 2, 1.0f);
-    dqi.assign ((size_t) L + 2, 0);
-    dlPos = boxPos = dqHead = dqSize = 0;
-    t = 0; env = 1;
-    analog.prepare (sr);
-    setLatencySamples (L - 1 + tpDelay);
-    driveS.reset (sr, 0.02); driveS.setCurrentAndTargetValue (dsp::db2a (-pThr->load()));
-    ceilS.reset (sr, 0.02); ceilS.setCurrentAndTargetValue (dsp::db2a (pCeil->load()));
-}
-
-// größter Betrag zwischen Sample (n - tpDelay) und dem nächsten, aus den letzten tpTaps Samples interpoliert
-float LimitProcessor::truePeak (int ch) const
-{
-    const float* h = hist[ch];
-    float pk = std::abs (h[(histPos + tpTaps - 1 - tpDelay) % tpTaps]);
-    for (int ph = 1; ph < tpPhases; ++ph)
-    {
-        float acc = 0;
-        for (int k = 0; k < tpTaps; ++k) acc += tpH[ph][k] * h[(histPos + k) % tpTaps];   // histPos = ältester Wert
-        pk = std::max (pk, std::abs (acc));
-    }
-    return pk;
+    link.pull (core);
+    core.prepare (sampleRate, blockSize);
+    reportedLatency = core.latency();
+    setLatencySamples (reportedLatency);
 }
 
 void LimitProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
@@ -75,72 +29,13 @@ void LimitProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
     const int n = buf.getNumSamples();
     const int nch = std::min (2, getMainBusNumInputChannels());
     if (nch == 0) return;
-    float* Lp = buf.getWritePointer (0);
-    float* Rp = buf.getWritePointer (nch > 1 ? 1 : 0);
-
-    const bool bypass = pBypass->load() > 0.5f;
-    driveS.setTargetValue (dsp::db2a (-pThr->load()));
-    ceilS.setTargetValue (dsp::db2a (pCeil->load()));
-    const float relC = dsp::coef (pRel->load(), sr);
-    analog.beginBlock();
-    const bool sat = analog.active() && ! bypass;
-    const bool tp = pTp->load() > 0.5f;
-    const int cap = (int) dqv.size(), D = (int) dl[0].size();
-    float inPk = 0, drvPk = 0, outPk = 0, gMin = 1;
-
-    for (int i = 0; i < n; ++i, ++t)
-    {
-        const float xl = Lp[i], xr = Rp[i];
-        float drive = driveS.getNextValue();
-        const float ceil = ceilS.getNextValue();
-        // Sättigung vor dem Limiter (nach dem Threshold-Gain), danach ohne weiteres Gain
-        float sl = xl, sr2 = xr;
-        if (sat) { analog.advance(); sl = analog.tick (xl * drive, 0); sr2 = analog.tick (xr * drive, 1); drive = 1.0f; }
-        // Verlauf für die Spitzenerkennung (Erkennung läuft tpDelay Samples hinterher, Audio entsprechend länger verzögert)
-        hist[0][histPos] = sl * drive; hist[1][histPos] = sr2 * drive;
-        histPos = (histPos + 1) % tpTaps;
-        const float pk = tp ? std::max (truePeak (0), truePeak (1))
-                            : std::max (std::abs (hist[0][(histPos + tpTaps - 1 - tpDelay) % tpTaps]),
-                                        std::abs (hist[1][(histPos + tpTaps - 1 - tpDelay) % tpTaps]));
-        const float r = pk > ceil ? ceil / pk : 1.0f;
-
-        // gleitendes Minimum über L Samples (monotone Warteschlange)
-        while (dqSize > 0 && dqv[(size_t) ((dqHead + dqSize - 1) % cap)] >= r) --dqSize;
-        const int back = (dqHead + dqSize) % cap;
-        dqv[(size_t) back] = r; dqi[(size_t) back] = t; ++dqSize;
-        while (dqi[(size_t) dqHead] <= t - L) { dqHead = (dqHead + 1) % cap; --dqSize; }
-        const float h = dqv[(size_t) dqHead];
-
-        // Release, dann Rechteck-Glättung über L Samples
-        env = h < env ? h : env + (h - env) * (1.0f - relC);
-        boxSum += env - box[(size_t) boxPos];
-        box[(size_t) boxPos] = env;
-        if (++boxPos >= L) boxPos = 0;
-        const float g = (float) (boxSum / L);
-
-        // Audio um L-1 Samples verzögern
-        dl[0][(size_t) dlPos] = sl; dl[1][(size_t) dlPos] = sr2;
-        int rp = dlPos - (L - 1 + tpDelay); if (rp < 0) rp += D;
-        const float yl = dl[0][(size_t) rp], yr = dl[1][(size_t) rp];
-        if (++dlPos >= D) dlPos = 0;
-
-        float ol = yl, orr = yr;
-        if (! bypass)
-        {
-            ol = juce::jlimit (-ceil, ceil, yl * drive * g);
-            orr = juce::jlimit (-ceil, ceil, yr * drive * g);
-            gMin = std::min (gMin, g);
-        }
-        Lp[i] = ol;
-        if (nch > 1) Rp[i] = orr;
-        inPk = std::max (inPk, std::max (std::abs (xl), std::abs (xr)));
-        drvPk = std::max (drvPk, pk);
-        outPk = std::max (outPk, std::max (std::abs (ol), std::abs (orr)));
-    }
-    atomicMax (inPeak, inPk);
-    atomicMax (drivenPeak, drvPk);
-    atomicMax (outPeak, outPk);
-    atomicMin (grPeak, dsp::a2db (gMin));
+    link.pull (core);
+    core.process (buf.getWritePointer (0), buf.getWritePointer (nch > 1 ? 1 : 0), n, nch, nullptr, nullptr);
+    if (core.latency() != reportedLatency) { reportedLatency = core.latency(); setLatencySamples (reportedLatency); }
+    atomicMax (inPeak, core.inPk);
+    atomicMax (drivenPeak, core.detPk);
+    atomicMax (outPeak, core.outPk);
+    atomicMin (grPeak, core.grMin);
 }
 
 juce::AudioProcessorEditor* LimitProcessor::createEditor() { return new LimitEditor (*this); }

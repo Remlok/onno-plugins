@@ -60,6 +60,19 @@ public:
         iOutput = param ("output"); iAnalog = param ("analog"); iDrive = param ("drive"); iBypass = param ("bypass");
     }
 
+    // EQ-Typen: 0 Low Cut, 1 Low Shelf, 2 Bell, 3 Notch, 4 High Shelf, 5 High Cut, 6 Band Pass; Analog 0 Clean .. 4 FET
+    std::vector<Preset> factoryPresets() const override
+    {
+        return {
+            { "Metal-Gitarre", "Metal", { { "b1on", 1 }, { "b1freq", 90 }, { "b3freq", 420 }, { "b3gain", -3 }, { "b3q", 1.2f }, { "b4freq", 2500 }, { "b4gain", 1.5f }, { "b7on", 1 }, { "b7freq", 9000 } } },
+            { "Kick Klick", "Metal", { { "b1on", 1 }, { "b1freq", 30 }, { "b2freq", 60 }, { "b2gain", 3 }, { "b3freq", 350 }, { "b3gain", -4 }, { "b3q", 1.5f }, { "b5freq", 4000 }, { "b5gain", 4 }, { "b5q", 1.2f } } },
+            { "Snare K\xc3\xb6rper", "Metal", { { "b1on", 1 }, { "b1freq", 80 }, { "b3freq", 200 }, { "b3gain", 2 }, { "b4freq", 900 }, { "b4gain", -2.5f }, { "b6gain", 3 } } },
+            { "Bass DI", "Metal", { { "b1on", 1 }, { "b1freq", 35 }, { "b3freq", 250 }, { "b3gain", -2 }, { "b4freq", 800 }, { "b4gain", 2 }, { "b7on", 1 }, { "b7freq", 5000 } } },
+            { "Gesang Luft", "Gesang", { { "b1on", 1 }, { "b1freq", 100 }, { "b3freq", 300 }, { "b3gain", -2 }, { "b5freq", 3000 }, { "b5gain", 1.5f }, { "b6freq", 10000 }, { "b6gain", 3 } } },
+            { "Shouts", "Gesang", { { "b1on", 1 }, { "b1freq", 120 }, { "b3freq", 500 }, { "b3gain", -3 }, { "b4freq", 2000 }, { "b4gain", 2 }, { "b5freq", 5500 }, { "b5gain", -2 }, { "b5q", 3 }, { "analog", 4 }, { "drive", 40 } } },
+        };
+    }
+
     Band band (int b) const
     {
         const float* q = v.data() + b * 6;

@@ -3,70 +3,34 @@
 using namespace onno;
 using juce::String;
 
-const juce::StringArray DelayProcessor::divNames { "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2", "1/2D", "1/1" };
+const juce::StringArray DelayProcessor::divNames = [] { juce::StringArray a; for (auto& s : core::DelayCore::divNames()) a.add (s); return a; }();
 const float DelayProcessor::divBeats[] = { 0.125f, 1.0f / 6, 0.25f, 0.375f, 1.0f / 3, 0.5f, 0.75f, 2.0f / 3, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f };
 
 juce::AudioProcessorValueTreeState::ParameterLayout DelayProcessor::layout()
 {
     prm::Layout p;
-    const float times[] = { 250, 375, 500 };
-    const int divs[] = { 8, 6, 10 };
-    const float pans[] = { 0, -60, 60 };
-    for (int t = 0; t < numTaps; ++t)
-    {
-        const String n = "Tap " + String (t + 1) + " ";
-        prm::bl (p, id (t, "on"), n + "On", t == 0);
-        prm::bl (p, id (t, "sync"), n + "Sync", true);
-        prm::lg (p, id (t, "time"), n + "Time", 1, maxMs, times[t], "ms");
-        prm::ch (p, id (t, "div"), n + "Division", divNames, divs[t]);
-        prm::lin (p, id (t, "fb"), n + "Feedback", 0, 98, t == 0 ? 35.0f : 20.0f, "%");
-        prm::lin (p, id (t, "level"), n + "Level", -60, 6, t == 0 ? 0.0f : -6.0f, "dB");
-        prm::lin (p, id (t, "pan"), n + "Pan", -100, 100, pans[t]);
-        prm::lg (p, id (t, "hp"), n + "Low Cut", 20, 2000, 20, "Hz");
-        prm::lg (p, id (t, "lp"), n + "High Cut", 500, 20000, 20000, "Hz");
-        prm::bl (p, id (t, "pp"), n + "Ping-Pong", false);
-    }
-    prm::lin (p, "dry", "Dry", -60, 6, 0, "dB");
-    prm::lin (p, "wet", "Wet", -60, 6, -6, "dB");
-    prm::lin (p, "duck", "Ducking", 0, 100, 0, "%");
-    Analog::addParams (p);
-    prm::bl (p, "bypass", "Bypass", false);
+    prm::fromCore (p, core::DelayCore::makeParams());
     return prm::done (p);
 }
 
 DelayProcessor::DelayProcessor() : ModernProcessor ("Onno Delay", "OnnoDelay", stereoBuses(), layout(), 12.0)
 {
-    static const char* const names[] = { "on", "sync", "time", "div", "fb", "level", "pan", "hp", "lp", "pp" };
+    link.attach (apvts, core);
     for (int t = 0; t < numTaps; ++t)
-        for (int k = 0; k < numP; ++k) taps[(size_t) t].p[(size_t) k] = raw (id (t, names[k]));
-    pDry = raw ("dry"); pWet = raw ("wet"); pDuck = raw ("duck"); pBypass = raw ("bypass");
-    for (auto& t : taps) t.analog.attach (*this);
+        tapP[(size_t) t] = { raw (id (t, "sync")), raw (id (t, "div")), raw (id (t, "time")) };
 }
 
 float DelayProcessor::tapMs (int t, double tempo) const
 {
-    const auto& p = taps[(size_t) t].p;
-    if (p[pSync]->load() > 0.5f)
-    {
-        const int d = juce::jlimit (0, divNames.size() - 1, (int) p[pDiv]->load());
-        return (float) std::min ((double) maxMs, divBeats[d] * 60000.0 / std::max (20.0, tempo));
-    }
-    return p[pTime]->load();
+    const auto& p = tapP[(size_t) t];
+    return core::DelayCore::tapMs (p[0]->load() > 0.5f, p[1]->load(), p[2]->load(), tempo);
 }
 
-void DelayProcessor::prepare (double sampleRate, int)
+void DelayProcessor::prepare (double sampleRate, int blockSize)
 {
-    sr = sampleRate;
-    for (auto& t : taps)
-    {
-        for (auto& b : t.buf) b.assign ((size_t) (maxMs * 0.001 * sr) + 8, 0.0f);
-        t.w = 0; t.cur = -1; t.hpF = t.lpF = -1;
-        t.hp.reset(); t.lp.reset();
-        t.analog.prepare (sr);
-    }
-    duckEnv = 0; duckS = 1;
-    dryS.reset (sr, 0.03); dryS.setCurrentAndTargetValue (pDry->load() <= -59.9f ? 0.0f : dsp::db2a (pDry->load()));
-    wetS.reset (sr, 0.03); wetS.setCurrentAndTargetValue (pWet->load() <= -59.9f ? 0.0f : dsp::db2a (pWet->load()));
+    link.pull (core);
+    core.setTempo (bpm.load());
+    core.prepare (sampleRate, blockSize);
 }
 
 void DelayProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
@@ -79,94 +43,13 @@ void DelayProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
     if (auto* ph = getPlayHead())
         if (auto pos = ph->getPosition())
             if (auto b = pos->getBpm()) bpm.store ((float) *b);
-    const double tempo = bpm.load();
-
-    float* L = buf.getWritePointer (0);
-    float* R = buf.getWritePointer (nch > 1 ? 1 : 0);
-    if (pBypass->load() > 0.5f) return;
-
-    dryS.setTargetValue (pDry->load() <= -59.9f ? 0.0f : dsp::db2a (pDry->load()));
-    wetS.setTargetValue (pWet->load() <= -59.9f ? 0.0f : dsp::db2a (pWet->load()));
-    const float duck = pDuck->load() * 0.01f;
-    const float dAtt = dsp::coef (5.0f, sr), dRel = dsp::coef (250.0f, sr), glide = 1.0f - dsp::coef (60.0f, sr);
-
-    struct TapNow { bool on, pp; float target, fb, gl, gr; };
-    std::array<TapNow, numTaps> tn;
-    for (int t = 0; t < numTaps; ++t)
-    {
-        auto& tp = taps[(size_t) t];
-        auto& p = tp.p;
-        auto& x = tn[(size_t) t];
-        x.on = p[pOn]->load() > 0.5f;
-        x.pp = p[pPp]->load() > 0.5f;
-        x.target = juce::jlimit (1.0f, (float) tp.buf[0].size() - 4.0f, tapMs (t, tempo) * 0.001f * (float) sr);
-        if (tp.cur < 0) tp.cur = x.target;
-        x.fb = p[pFb]->load() * 0.01f;
-        const float lv = p[pLevel]->load() <= -59.9f ? 0.0f : dsp::db2a (p[pLevel]->load());
-        const float pan = p[pPan]->load() * 0.01f;
-        x.gl = lv * (pan <= 0 ? 1.0f : 1.0f - pan);
-        x.gr = lv * (pan >= 0 ? 1.0f : 1.0f + pan);
-        const float hf = p[pHp]->load(), lf = p[pLp]->load();
-        if (hf != tp.hpF) { tp.hpF = hf; tp.hp.highPass (sr, std::min ((double) hf, sr * 0.45), 0.7071); }
-        if (lf != tp.lpF) { tp.lpF = lf; if (lf < 19900.0f && lf < sr * 0.45) tp.lp.lowPass (sr, lf, 0.7071); else tp.lp.identity(); }
-        tp.analog.beginBlock();
-        if (! x.on && tp.wasOn) { for (auto& b : tp.buf) std::fill (b.begin(), b.end(), 0.0f); tp.hp.reset(); tp.lp.reset(); }
-        tp.wasOn = x.on;
-    }
-
-    float outPk = 0, duckMin = 1;
-    for (int i = 0; i < n; ++i)
-    {
-        const float xl = L[i], xr = R[i];
-        float wl = 0, wr = 0;
-        for (int t = 0; t < numTaps; ++t)
-        {
-            const auto& x = tn[(size_t) t];
-            if (! x.on) continue;
-            auto& tp = taps[(size_t) t];
-            tp.cur += (x.target - tp.cur) * glide;
-            const int len = (int) tp.buf[0].size();
-            const int di = (int) tp.cur; const float fr = tp.cur - (float) di;
-            int i1 = tp.w - di; if (i1 < 0) i1 += len;
-            int i0 = i1 - 1; if (i0 < 0) i0 += len;
-            float yl = tp.buf[0][(size_t) i1] + fr * (tp.buf[0][(size_t) i0] - tp.buf[0][(size_t) i1]);
-            float yr = tp.buf[1][(size_t) i1] + fr * (tp.buf[1][(size_t) i0] - tp.buf[1][(size_t) i1]);
-            if (tp.hpF > 20.5f) { yl = tp.hp.process (yl, 0); yr = tp.hp.process (yr, 1); }
-            yl = tp.lp.process (yl, 0); yr = tp.lp.process (yr, 1);
-            if (tp.analog.active())
-            {
-                // wie ein Bandecho: jede Wiederholung läuft erneut durch die Sättigung
-                tp.analog.advance();
-                yl = tp.analog.tick (yl, 0, false); yr = tp.analog.tick (yr, 1, false);
-            }
-            if (x.pp)
-            {
-                tp.buf[0][(size_t) tp.w] = 0.5f * (xl + xr) + x.fb * yr;
-                tp.buf[1][(size_t) tp.w] = x.fb * yl;
-            }
-            else
-            {
-                tp.buf[0][(size_t) tp.w] = xl + x.fb * yl;
-                tp.buf[1][(size_t) tp.w] = xr + x.fb * yr;
-            }
-            if (++tp.w >= len) tp.w = 0;
-            wl += yl * x.gl; wr += yr * x.gr;
-        }
-        // Ducking: Echo leiser, solange das Signal spielt
-        const float in = std::max (std::abs (xl), std::abs (xr));
-        duckEnv = in > duckEnv ? dAtt * duckEnv + (1 - dAtt) * in : dRel * duckEnv + (1 - dRel) * in;
-        const float target = 1.0f - duck * juce::jlimit (0.0f, 1.0f, (dsp::a2db (duckEnv) + 42.0f) / 30.0f);
-        duckS += (target - duckS) * 0.002f;
-        duckMin = std::min (duckMin, duckS);
-        const float dg = dryS.getNextValue(), wg = wetS.getNextValue() * duckS;
-        const float ol = xl * dg + wl * wg, orr = xr * dg + wr * wg;
-        L[i] = ol;
-        if (nch > 1) R[i] = orr;
-        else L[i] = 0.5f * (ol + orr);
-        outPk = std::max (outPk, std::max (std::abs (ol), std::abs (orr)));
-    }
-    atomicMax (outPeak, outPk);
-    duckGain.store (duckMin);
+    link.pull (core);
+    core.setTempo (bpm.load());
+    core.process (buf.getWritePointer (0), buf.getWritePointer (nch > 1 ? 1 : 0), n, nch, nullptr, nullptr);
+    if (core.v[core::DelayCore::bypass] > 0.5f) return;      // wie bisher: im Bypass keine Anzeige
+    atomicMax (outPeak, core.outPk);
+    duckGain.store (core.disp[0]);
+    core.resetDisplay();
 }
 
 juce::AudioProcessorEditor* DelayProcessor::createEditor() { return new DelayEditor (*this); }

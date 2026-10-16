@@ -328,6 +328,19 @@ public:
     // Presets: 0 = Init (Standardwerte), dann Werkspresets, dann eigene Dateien
     virtual std::vector<FactoryPreset> factoryPresets() const { return {}; }
 
+    // Werkspresets eines Klang-Kerns (gleiche Liste wie im Browser)
+    static std::vector<FactoryPreset> fromCore (const std::vector<core::Preset>& list)
+    {
+        std::vector<FactoryPreset> r;
+        for (auto& p : list)
+        {
+            FactoryPreset f { juce::String::fromUTF8 (p.name.c_str()), {}, juce::String::fromUTF8 (p.category.c_str()) };
+            for (auto& [id, v] : p.values) f.values.push_back ({ juce::String (id), v });
+            r.push_back (std::move (f));
+        }
+        return r;
+    }
+
     juce::File userPresetDir() const
     {
         return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)

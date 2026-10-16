@@ -6,6 +6,7 @@
 #include "Common/ModernEditor.h"
 #include "Common/OnnoDSP.h"
 #include "Common/Analog.h"
+#include "Core/LimitCore.h"
 
 class LimitProcessor : public onno::ModernProcessor
 {
@@ -14,27 +15,15 @@ public:
     void prepare (double sampleRate, int) override;
     void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override;
+    std::vector<FactoryPreset> factoryPresets() const override { return fromCore (core.factoryPresets()); }
 
     std::atomic<float> drivenPeak { 0.0f };
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout layout();
-    std::atomic<float> *pThr, *pCeil, *pRel, *pBypass, *pTp;
-    static constexpr int tpTaps = 24, tpPhases = 8, tpDelay = 12;
-    float tpH[tpPhases][tpTaps] {};
-    float hist[2][tpTaps] {};
-    int histPos = 0;
-    float truePeak (int ch) const;
-    double sr = 48000;
-    int L = 72;                               // Fensterlänge in Samples
-    std::vector<float> dl[2], box, dqv;
-    std::vector<long long> dqi;
-    int dlPos = 0, boxPos = 0, dqHead = 0, dqSize = 0;
-    long long t = 0;
-    double boxSum = 0;
-    float env = 1;
-    juce::SmoothedValue<float> driveS, ceilS;
-    onno::Analog analog;
+    onno::core::LimitCore core;
+    onno::CoreLink link;
+    int reportedLatency = -1;
 };
 
 class LimitEditor : public onno::ModernEditor

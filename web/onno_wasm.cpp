@@ -3,6 +3,14 @@
 #include "Core/Core.h"
 #include "Core/EQCore.h"
 #include "Core/CompCore.h"
+#include "Core/GateCore.h"
+#include "Core/VC1Core.h"
+#include "Core/MultiCompCore.h"
+#include "Core/DelayCore.h"
+#include "Core/LimitCore.h"
+#include "Core/TameCore.h"
+#include "Core/RV1Core.h"
+#include "Core/CS1Core.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -13,18 +21,25 @@ using namespace onno::core;
 
 namespace
 {
-enum Kind { kEQ = 0, kComp, numKinds };
-const char* const kindIds[numKinds] = { "eq", "comp" };
+// Alle Plugins im Browser: neues Plugin = Kern einbinden und hier eine Zeile ergänzen (Reihenfolge = Kind-Nummer)
+template <typename T> std::unique_ptr<PluginCore> makeCore() { return std::make_unique<T>(); }
+struct Kind { const char* id; std::unique_ptr<PluginCore> (*make)(); };
+const Kind kinds[] = {
+    { "eq", makeCore<EQCore> },
+    { "comp", makeCore<CompCore> },
+    { "gate", makeCore<GateCore> },
+    { "vc1", makeCore<VC1Core> },
+    { "multicomp", makeCore<MultiCompCore> },
+    { "delay", makeCore<DelayCore> },
+    { "limit", makeCore<LimitCore> },
+    { "tame", makeCore<TameCore> },
+    { "rv1", makeCore<RV1Core> },
+    { "cs1", makeCore<CS1Core> },
+};
+constexpr int numKinds = (int) (sizeof (kinds) / sizeof (kinds[0]));
+constexpr int kEQ = 0;
 
-std::unique_ptr<PluginCore> make (int kind)
-{
-    switch (kind)
-    {
-        case kEQ:   return std::make_unique<EQCore>();
-        case kComp: return std::make_unique<CompCore>();
-        default:    return nullptr;
-    }
-}
+std::unique_ptr<PluginCore> make (int kind) { return kind >= 0 && kind < numKinds ? kinds[kind].make() : nullptr; }
 
 struct Instance
 {
@@ -47,7 +62,7 @@ void jsonString (std::string& o, const std::string& s)
 }
 
 EXPORT int onno_kinds() { return numKinds; }
-EXPORT const char* onno_kind_id (int kind) { return kind >= 0 && kind < numKinds ? kindIds[kind] : ""; }
+EXPORT const char* onno_kind_id (int kind) { return kind >= 0 && kind < numKinds ? kinds[kind].id : ""; }
 
 // Parameter-Tabelle eines Plugins als JSON (für die Oberfläche)
 EXPORT const char* onno_params_json (int kind)
@@ -70,7 +85,36 @@ EXPORT const char* onno_params_json (int kind)
             text += ",\"choices\":[";
             for (size_t i = 0; i < d.choices.size(); ++i) { if (i) text += ','; jsonString (text, d.choices[i]); }
             text += "],\"automatable\":"; text += d.automatable ? "true" : "false";
+            text += ",\"keep\":"; text += c->keepOnPreset (d.id) ? "true" : "false";
             text += '}';
+        }
+    }
+    text += "]";
+    return text.c_str();
+}
+
+// Werkspresets als JSON: [{"name":..,"category":..,"values":{"id":wert,..}},..]
+EXPORT const char* onno_presets_json (int kind)
+{
+    auto c = make (kind);
+    text = "[";
+    if (c)
+    {
+        bool first = true;
+        for (auto& p : c->factoryPresets())
+        {
+            if (! first) text += ',';
+            first = false;
+            text += "{\"name\":"; jsonString (text, p.name);
+            text += ",\"category\":"; jsonString (text, p.category);
+            text += ",\"values\":{";
+            for (size_t i = 0; i < p.values.size(); ++i)
+            {
+                if (i) text += ',';
+                jsonString (text, p.values[i].first);
+                text += ':' + std::to_string (p.values[i].second);
+            }
+            text += "}}";
         }
     }
     text += "]";
@@ -131,6 +175,13 @@ EXPORT float onno_meter (int h, int k)
         default: return 0;
     }
 }
+
+// weitere Anzeigewerte des letzten Blocks (je Plugin festgelegt)
+EXPORT int onno_display_len (int h) { auto* in = get (h); return in ? (int) in->core->disp.size() : 0; }
+EXPORT float* onno_display (int h) { auto* in = get (h); return in && ! in->core->disp.empty() ? in->core->disp.data() : nullptr; }
+EXPORT double onno_tail (int h) { auto* in = get (h); return in ? in->core->tailSeconds() : 0.0; }
+EXPORT void onno_set_tempo (int h, double bpm) { if (auto* in = get (h)) in->core->setTempo (bpm); }
+EXPORT void onno_display_reset (int h) { if (auto* in = get (h)) in->core->resetDisplay(); }
 
 // EQ-Kurve in dB bei Frequenz f (nur Onno EQ)
 EXPORT float onno_eq_response (int h, float f)

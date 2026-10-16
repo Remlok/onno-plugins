@@ -1,11 +1,12 @@
 #pragma once
 #include "Common/ModernProcessor.h"
-#include <juce_dsp/juce_dsp.h>
 #include "Common/OnnoDSP.h"
+#include "Core/CS1Core.h"
 #include <atomic>
 
 // Onno CS-1: Channel Strip
 // Kette: Trim → Drive (2x Oversampling) → Hoch-/Tiefpass → Gate → EQ ⇄ Kompressor → De-Esser → Output (+ Auto-Gain)
+// Der Klang steckt im Kern (Core/CS1Core.h, auch im Browser); hier bleiben Auto-Trim und das Preset-Verhalten.
 // Workflow: Quell-Presets mit einem Klick, Auto-Trim auf -18 dBFS RMS, Auto-Gain; A/B, Rückgängig und MATCH aus der Suite.
 class CS1Processor : public onno::ModernProcessor
 {
@@ -16,9 +17,9 @@ public:
 
     // --- Workflow (nur vom Message-Thread aufrufen) ---
     // Quell-Presets: Werkspresets 1..10 der gemeinsamen Preset-Liste
-    static constexpr int numPresets = 10;
-    static const char* const presetNames[numPresets];
-    std::vector<FactoryPreset> factoryPresets() const override;
+    static constexpr int numPresets = onno::core::CS1Core::numPresets;
+    static constexpr const char* const* presetNames = onno::core::CS1Core::presetNames;
+    std::vector<FactoryPreset> factoryPresets() const override { return fromCore (core.factoryPresets()); }
     bool keepOnPreset (const juce::String& id) const override { return id == "trim" || id == "out" || id == "autoGain"; }
     void applyPreset (int index) { if (index >= 0 && index < numPresets) loadPreset (1 + index); }
     int getSlot() const { return slot(); }
@@ -40,20 +41,11 @@ protected:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
-    float p (const char* id) const { return apvts.getRawParameterValue (id)->load(); }
-    bool on (const char* id) const { return p (id) > 0.5f; }
-    void updateFilters();
 
     double sr = 48000.0;
-    juce::dsp::Oversampling<float> oversampling { 2, 1, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true };
-
-    onno::dsp::Biquad hp1, hp2, lp, lf, lmf, hmf, hf, dsLo1, dsLo2, dsHi1, dsHi2, dcBlock;
-    bool hpOn = false, lpOn = false;
-
-    float gateEnv = -120.0f, gateGain = 0.0f; int gateHold = 0;
-    float compEnv = 0.0f;
-    float dsEnv = 0.0f;
-    float autoIn = 0.0f, autoOut = 0.0f, autoG = 1.0f;
+    onno::core::CS1Core core;
+    onno::CoreLink link;
+    int reportedLatency = -1;
     double trimSum = 0.0; long trimCount = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CS1Processor)

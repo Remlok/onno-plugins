@@ -4,282 +4,70 @@
 using namespace onno;
 using juce::String;
 
-const juce::StringArray TameProcessor::profileNames { "Custom", "Rhythm Gtr", "Lead Gtr", "Scream", "Clean Vox", "Snare", "Overheads", "Bass", "Mix Bus" };
-
 namespace
 {
-struct Profile { float depth, sharp, sel, att, rel, low, high; float nf[4], ng[4]; };
-// Startpunkte für Metal-Quellen (Knoten: Frequenz, Empfindlichkeit in dB)
-const Profile profiles[] = {
-    { 50, 50, 4, 5, 80, 120, 16000, { 250, 1000, 3500, 8000 }, { 0, 0, 0, 0 } },          // Custom (Standard)
-    { 45, 55, 3, 5, 60, 150, 9000, { 280, 1000, 3800, 7000 }, { 4, -3, 5, 2 } },         // Rhythmusgitarre: Mulm und Fizz
-    { 40, 65, 3, 4, 70, 400, 11000, { 700, 1500, 2800, 5500 }, { -2, 0, 4, 3 } },       // Leadgitarre: harte Präsenz
-    { 55, 45, 3, 3, 50, 700, 13000, { 900, 2500, 4500, 8000 }, { -2, 5, 3, 4 } },       // Scream: Schärfe und Zischen
-    { 35, 50, 4, 5, 80, 180, 13000, { 320, 1200, 3000, 7500 }, { 2, -1, 3, 3 } },       // Clean-Gesang: Boxiness, Härte, S
-    { 50, 75, 3, 2, 60, 150, 10000, { 220, 900, 3000, 6000 }, { 4, 3, 0, 1 } },         // Snare: Ringen der Felle
-    { 45, 50, 3, 3, 90, 1500, 16000, { 2500, 4500, 8000, 12000 }, { 1, 3, 4, 2 } },     // Overheads: Becken-Schärfe
-    { 35, 60, 4, 8, 100, 40, 4000, { 90, 250, 800, 2000 }, { 2, 0, 3, 1 } },            // Bass: Dröhnen und Klacken
-    { 20, 50, 5, 8, 120, 100, 16000, { 250, 1000, 3500, 8000 }, { 0, 0, 2, 1 } },       // Summe: sanft
-};
-const float defNodeF[4] = { 250, 1000, 3500, 8000 };
+juce::StringArray makeProfileNames()
+{
+    juce::StringArray a;
+    for (auto& n : onno::core::TameCore::profileNames()) a.add (juce::String (n));
+    return a;
 }
+}
+
+const juce::StringArray TameProcessor::profileNames = makeProfileNames();
 
 juce::AudioProcessorValueTreeState::ParameterLayout TameProcessor::layout()
 {
     prm::Layout p;
-    prm::lin (p, "depth", "Depth", 0, 100, 50, "%");
-    prm::lin (p, "sharp", "Sharpness", 0, 100, 50, "%");
-    prm::lin (p, "sel", "Selectivity", 0, 20, 4, "dB");
-    prm::lg (p, "attack", "Attack", 1, 100, 5, "ms");
-    prm::lg (p, "release", "Release", 10, 500, 80, "ms");
-    prm::lg (p, "low", "Range Low", 20, 2000, 120, "Hz");
-    prm::lg (p, "high", "Range High", 1000, 20000, 16000, "Hz");
-    prm::lin (p, "mix", "Mix", 0, 100, 100, "%");
-    prm::lin (p, "output", "Output", -12, 12, 0, "dB");
-    for (int n = 0; n < numNodes; ++n)
-    {
-        prm::lg (p, nid (n, "freq"), "Node " + String (n + 1) + " Freq", 20, 20000, defNodeF[n], "Hz");
-        prm::lin (p, nid (n, "gain"), "Node " + String (n + 1) + " Sensitivity", -12, 12, 0, "dB");
-    }
-    prm::ch (p, "profile", "Profile", profileNames, 0, false);
-    prm::bl (p, "delta", "Delta", false);
-    prm::bl (p, "link", "Stereo Link", true);
-    prm::bl (p, "bypass", "Bypass", false);
+    prm::fromCore (p, core::TameCore::makeParams());
     return prm::done (p);
 }
 
 TameProcessor::TameProcessor() : ModernProcessor ("Onno Tame", "OnnoTame", stereoBuses(), layout())
 {
-    pDepth = raw ("depth"); pSharp = raw ("sharp"); pSel = raw ("sel"); pAtt = raw ("attack"); pRel = raw ("release");
-    pLow = raw ("low"); pHigh = raw ("high"); pMix = raw ("mix"); pOut = raw ("output");
-    pDelta = raw ("delta"); pLink = raw ("link"); pBypass = raw ("bypass");
+    link.attach (apvts, core);
     for (int n = 0; n < numNodes; ++n) { pNodeF[(size_t) n] = raw (nid (n, "freq")); pNodeG[(size_t) n] = raw (nid (n, "gain")); }
     for (auto& g : grDisplay) g.store (0.0f);
 }
 
 void TameProcessor::applyProfile (int pr)
 {
-    pr = juce::jlimit (0, (int) std::size (profiles) - 1, pr);
-    const auto& P = profiles[pr];
-    auto set = [this] (const String& id, float v)
+    for (auto& [id, val] : core::TameCore::profileValues (pr))
     {
-        auto* prm = apvts.getParameter (id);
-        prm->beginChangeGesture(); prm->setValueNotifyingHost (prm->convertTo0to1 (v)); prm->endChangeGesture();
-    };
-    set ("depth", P.depth); set ("sharp", P.sharp); set ("sel", P.sel); set ("attack", P.att); set ("release", P.rel);
-    set ("low", P.low); set ("high", P.high);
-    for (int n = 0; n < numNodes; ++n) { set (nid (n, "freq"), P.nf[n]); set (nid (n, "gain"), P.ng[n]); }
-    set ("profile", (float) pr);
+        auto* prm = apvts.getParameter (juce::String (id));
+        prm->beginChangeGesture(); prm->setValueNotifyingHost (prm->convertTo0to1 (val)); prm->endChangeGesture();
+    }
 }
 
 float TameProcessor::sensitivityAt (float f) const
 {
-    float s = 0;
-    for (int n = 0; n < numNodes; ++n)
-    {
-        const float d = std::log2 (std::max (f, 1.0f) / pNodeF[(size_t) n]->load()) / 0.6f;
-        s += pNodeG[(size_t) n]->load() * std::exp (-0.5f * d * d);
-    }
-    return s;
+    float nf[numNodes], ng[numNodes];
+    for (int n = 0; n < numNodes; ++n) { nf[n] = pNodeF[(size_t) n]->load(); ng[n] = pNodeG[(size_t) n]->load(); }
+    return core::TameCore::sensitivity (f, nf, ng);
 }
 
-void TameProcessor::prepare (double sampleRate, int)
+void TameProcessor::prepare (double sampleRate, int blockSize)
 {
-    sr = sampleRate;
-    order = sr <= 50000 ? 10 : (sr <= 100000 ? 11 : 12);
-    N = 1 << order; hop = N / 4;
-    fft = std::make_unique<juce::dsp::FFT> (order);
-    win.resize ((size_t) N);
-    for (int i = 0; i < N; ++i) win[(size_t) i] = std::sqrt (0.5f - 0.5f * std::cos (2.0f * juce::MathConstants<float>::pi * i / N));
-    const size_t K = (size_t) N / 2 + 1;
-    for (int c = 0; c < 2; ++c)
-    {
-        inRing[c].assign ((size_t) N, 0.0f);
-        outAcc[c].assign ((size_t) N, 0.0f);
-        work[c].assign ((size_t) N * 2, 0.0f);
-        pdb[c].assign (K, -120.0f);
-        gdb[c].assign (K, 0.0f);
-        state[c].assign (K, 0.0f);
-        det[c].assign (K, 0.0f);
-    }
-    sens.assign (K, 0.0f);
-    prefix.assign (K + 1, 0.0f);
-    lo.assign (K, 0); hi.assign (K, 0);
-    lastWidth = -1;
-    pos = hopCount = 0;
-    analyzer.prepare (sr);
-    setLatencySamples (N);
-    mixS.reset (sr, 0.03); mixS.setCurrentAndTargetValue (pMix->load() * 0.01f);
-    outS.reset (sr, 0.03); outS.setCurrentAndTargetValue (dsp::db2a (pOut->load()));
-}
-
-void TameProcessor::computeGains (const float* p, float* g, std::vector<float>& st)
-{
-    const int K = N / 2 + 1;
-    const float binHz = (float) sr / N;
-
-    // Breite der Hüllkurve: weich = breite Hüllkurve (fängt auch breite Buckel), scharf = nur schmale Spitzen
-    const float width = 3.0f - 2.5f * pSharp->load() * 0.01f;
-    if (std::abs (width - lastWidth) > 1.0e-3f)
-    {
-        lastWidth = width;
-        const float r = std::pow (2.0f, width * 0.5f);
-        for (int k = 0; k < K; ++k)
-        {
-            lo[(size_t) k] = juce::jlimit (1, K - 1, (int) std::floor ((float) k / r));
-            hi[(size_t) k] = juce::jlimit (1, K - 1, (int) std::ceil ((float) k * r));
-            if (hi[(size_t) k] - lo[(size_t) k] < 2) hi[(size_t) k] = std::min (K - 1, lo[(size_t) k] + 2);
-        }
-    }
-
-    // Pegel unterhalb der Rauschgrenze zählen nicht (sonst "findet" das Plugin Resonanzen in der Stille)
-    const float floorDb = 20.0f * std::log10 (N * 0.25f) - 80.0f;
-    prefix[0] = 0;
-    for (int k = 0; k < K; ++k) prefix[(size_t) k + 1] = prefix[(size_t) k] + std::max (p[k], floorDb);
-
-    const float d = pDepth->load() * 0.01f, sel = pSel->load();
-    const float amount = std::min (1.0f, 1.5f * d), maxRed = 36.0f * d;
-    const float low = pLow->load(), high = pHigh->load();
-    const float frameSec = (float) hop / (float) sr;
-    const float att = std::exp (-frameSec / (pAtt->load() * 0.001f)), rel = std::exp (-frameSec / (pRel->load() * 0.001f));
-
-    for (int k = 1; k < K; ++k)
-    {
-        const float f = k * binHz;
-        float w = 1.0f;
-        if (f < low) w = juce::jlimit (0.0f, 1.0f, 1.0f - 3.0f * std::log2 (low / f));
-        else if (f > high) w = juce::jlimit (0.0f, 1.0f, 1.0f - 3.0f * std::log2 (f / high));
-        float target = 0;
-        if (w > 0 && p[k] > floorDb)
-        {
-            const float env = (prefix[(size_t) hi[(size_t) k] + 1] - prefix[(size_t) lo[(size_t) k]]) / (float) (hi[(size_t) k] - lo[(size_t) k] + 1);
-            const float excess = p[k] - env - sel + sens[(size_t) k];
-            if (excess > 0) target = -std::min (maxRed, excess * amount) * w;
-        }
-        auto& s = st[(size_t) k];
-        s = target < s ? att * s + (1 - att) * target : rel * s + (1 - rel) * target;
-    }
-    // leicht über die Frequenz glätten (gegen "musikalisches Rauschen")
-    g[0] = 0;
-    for (int k = 1; k < K - 1; ++k) g[k] = 0.25f * st[(size_t) k - 1] + 0.5f * st[(size_t) k] + 0.25f * st[(size_t) k + 1];
-    g[K - 1] = st[(size_t) K - 1];
-}
-
-// Erkennungsspektrum: Leistung je Bin leicht über Frequenz und Zeit (~12 ms) geglättet, dann in dB.
-// Ohne Glättung schwanken einzelne Bins bei Rauschen so stark, dass Zufallsspitzen als Resonanz gelten.
-void TameProcessor::detect (int c, const std::vector<float>& power)
-{
-    const int K = N / 2 + 1;
-    const float a = std::exp (-(float) hop / ((float) sr * 0.012f));
-    auto& dt = det[c];
-    auto& out = pdb[c];
-    float prev = power[0];
-    for (int k = 0; k < K; ++k)
-    {
-        const float cur = power[(size_t) k], next = k + 1 < K ? power[(size_t) k + 1] : cur;
-        const float sm = 0.25f * prev + 0.5f * cur + 0.25f * next;
-        prev = cur;
-        dt[(size_t) k] = a * dt[(size_t) k] + (1 - a) * sm;
-    }
-    for (int k = 0; k < K; ++k) out[(size_t) k] = 10.0f * std::log10 (dt[(size_t) k] + 1.0e-12f);
-}
-
-void TameProcessor::processFrame()
-{
-    const int K = N / 2 + 1;
-    const float binHz = (float) sr / N;
-    for (int k = 0; k < K; ++k) sens[(size_t) k] = sensitivityAt (k * binHz);
-
-    for (int c = 0; c < nch; ++c)
-    {
-        auto& w = work[c];
-        for (int i = 0; i < N; ++i) w[(size_t) i] = inRing[c][(size_t) ((pos + i) % N)] * win[(size_t) i];
-        std::fill (w.begin() + N, w.end(), 0.0f);
-        fft->performRealOnlyForwardTransform (w.data(), true);
-        for (int k = 0; k < K; ++k)
-        {
-            const float re = w[(size_t) (2 * k)], im = w[(size_t) (2 * k + 1)];
-            pdb[c][(size_t) k] = re * re + im * im;
-        }
-    }
-
-    const bool link = pLink->load() > 0.5f || nch < 2;
-    if (link)
-    {
-        if (nch > 1)
-            for (int k = 0; k < K; ++k) pdb[0][(size_t) k] = 0.5f * (pdb[0][(size_t) k] + pdb[1][(size_t) k]);
-        detect (0, pdb[0]);
-        computeGains (pdb[0].data(), gdb[0].data(), state[0]);
-        if (nch > 1) gdb[1] = gdb[0];
-    }
-    else
-        for (int c = 0; c < nch; ++c)
-        {
-            detect (c, pdb[c]);
-            computeGains (pdb[c].data(), gdb[c].data(), state[c]);
-        }
-
-    // Anzeige: stärkste Reduktion je Band
-    dispMin.fill (0.0f);
-    for (int k = 1; k < K; ++k)
-    {
-        const float f = k * binHz;
-        if (f < 20.0f || f >= 20000.0f) continue;
-        const int b = juce::jlimit (0, numDisplayBands - 1, (int) (std::log (f / 20.0f) / std::log (1000.0f) * numDisplayBands));
-        dispMin[(size_t) b] = std::min (dispMin[(size_t) b], std::min (gdb[0][(size_t) k], nch > 1 ? gdb[1][(size_t) k] : 0.0f));
-    }
-    for (int b = 0; b < numDisplayBands; ++b) atomicMin (grDisplay[(size_t) b], dispMin[(size_t) b]);
-
-    // Verstärkung anwenden, zurücktransformieren, überlappend addieren
-    for (int c = 0; c < nch; ++c)
-    {
-        auto& w = work[c];
-        for (int k = 0; k < K; ++k)
-        {
-            const float gl = dsp::db2a (gdb[c][(size_t) k]);
-            w[(size_t) (2 * k)] *= gl; w[(size_t) (2 * k + 1)] *= gl;
-        }
-        fft->performRealOnlyInverseTransform (w.data());
-        // sqrt-Hann zweimal = Hann; bei 75 % Überlappung summiert sich Hann zu 2
-        for (int i = 0; i < N; ++i)
-            outAcc[c][(size_t) ((pos + i) % N)] += w[(size_t) i] * win[(size_t) i] * 0.5f;
-    }
+    link.pull (core);
+    core.prepare (sampleRate, blockSize);
+    analyzer.prepare (sampleRate);
+    reportedLatency = core.latency();
+    setLatencySamples (reportedLatency);
 }
 
 void TameProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
     const int n = buf.getNumSamples();
-    nch = std::min (2, getMainBusNumInputChannels());
+    const int nch = std::min (2, getMainBusNumInputChannels());
     if (nch == 0) return;
     analyzer.push (buf.getReadPointer (0), nch > 1 ? buf.getReadPointer (1) : nullptr, n);
-
-    const bool bypass = pBypass->load() > 0.5f, delta = pDelta->load() > 0.5f;
-    mixS.setTargetValue (pMix->load() * 0.01f);
-    outS.setTargetValue (dsp::db2a (pOut->load()));
-    float outPk = 0;
-
-    for (int i = 0; i < n; ++i)
-    {
-        const float m = mixS.getNextValue(), og = outS.getNextValue();
-        for (int c = 0; c < nch; ++c)
-        {
-            float* d = buf.getWritePointer (c);
-            const float dryD = inRing[c][(size_t) pos];      // Eingang von vor N Samples = Latenz
-            inRing[c][(size_t) pos] = d[i];
-            const float wet = outAcc[c][(size_t) pos];
-            outAcc[c][(size_t) pos] = 0;
-            float y;
-            if (bypass) y = dryD;
-            else if (delta) y = (dryD - wet) * og;
-            else y = (m * wet + (1 - m) * dryD) * og;
-            d[i] = y;
-            outPk = std::max (outPk, std::abs (y));
-        }
-        if (++pos >= N) pos = 0;
-        if (++hopCount >= hop) { hopCount = 0; processFrame(); }
-    }
-    atomicMax (outPeak, outPk);
+    link.pull (core);
+    core.process (buf.getWritePointer (0), buf.getWritePointer (nch > 1 ? 1 : 0), n, nch, nullptr, nullptr);
+    if (core.latency() != reportedLatency) { reportedLatency = core.latency(); setLatencySamples (reportedLatency); }
+    atomicMax (outPeak, core.outPk);
+    for (int b = 0; b < numDisplayBands; ++b) atomicMin (grDisplay[(size_t) b], core.disp[(size_t) b]);
+    core.resetDisplay();
 }
 
 juce::AudioProcessorEditor* TameProcessor::createEditor() { return new TameEditor (*this); }

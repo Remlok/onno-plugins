@@ -1,132 +1,37 @@
 #include "RV1Processor.h"
 #include "RV1Editor.h"
 
-using namespace onno::dsp;
-
-const char* const RV1Processor::algoNames[numAlgos] = { "HALL", "PLATE", "ROOM", "CHAMBER", "AMBIENCE", "CHORUS", "GATED" };
-const char* const RV1Processor::categoryNames[numCategories] = { "HALL", "PLATE", "ROOM", "CHAMBER", "AMBIENCE", "CHORUS", "GATED", "BIG" };
-
-const std::vector<RV1Processor::Program>& RV1Processor::programs()
-{
-    //  Name, Kategorie, Algorithmus, Pre-Delay, Decay, Size, Depth, Movement, Character, Width, Duck, Low Cut, High Cut
-    static const std::vector<Program> list = {
-        { "Concert Hall", 0, hall, 30, 2.4f, 60, 55, 30, 50, 100, 0, 80, 12000 },
-        { "Big Hall", 0, hall, 45, 3.8f, 85, 65, 35, 45, 120, 0, 100, 10000 },
-        { "Vocal Hall", 0, hall, 70, 2.2f, 55, 45, 25, 58, 100, 45, 150, 11000 },
-        { "Dark Hall", 0, hall, 25, 3.0f, 70, 70, 30, 25, 110, 0, 100, 6000 },
-        { "Bright Plate", 1, plate, 10, 1.8f, 50, 30, 20, 75, 100, 0, 150, 16000 },
-        { "Vocal Plate", 1, plate, 60, 1.6f, 45, 35, 20, 62, 100, 50, 180, 12000 },
-        { "Snare Plate", 1, plate, 5, 1.2f, 40, 25, 15, 68, 110, 0, 200, 14000 },
-        { "Gold Plate", 1, plate, 20, 2.6f, 60, 40, 25, 55, 100, 0, 120, 10000 },
-        { "Small Room", 2, room, 0, 0.6f, 30, 30, 10, 50, 90, 0, 60, 14000 },
-        { "Drum Room", 2, room, 5, 0.9f, 50, 40, 15, 55, 110, 0, 80, 12000 },
-        { "Live Room", 2, room, 10, 1.2f, 65, 50, 20, 52, 100, 0, 70, 13000 },
-        { "Studio A", 2, room, 8, 0.8f, 45, 35, 12, 48, 100, 0, 90, 11000 },
-        { "Echo Chamber", 3, chamber, 20, 1.8f, 55, 50, 20, 50, 100, 0, 100, 10000 },
-        { "Stone Chamber", 3, chamber, 15, 2.4f, 65, 55, 15, 60, 100, 0, 120, 13000 },
-        { "Tight Chamber", 3, chamber, 10, 1.1f, 40, 40, 15, 52, 90, 0, 120, 12000 },
-        { "Wide Chamber", 3, chamber, 25, 2.0f, 60, 50, 25, 50, 140, 0, 100, 11000 },
-        { "Air", 4, ambience, 0, 0.5f, 30, 20, 20, 70, 120, 0, 300, 18000 },
-        { "Close Mic", 4, ambience, 0, 0.35f, 20, 15, 10, 50, 80, 0, 150, 12000 },
-        { "Short Space", 4, ambience, 5, 0.7f, 40, 30, 15, 50, 100, 0, 120, 12000 },
-        { "Glue", 4, ambience, 0, 0.9f, 45, 40, 20, 45, 100, 0, 100, 9000 },
-        { "Chorus Space", 5, chorus, 20, 2.0f, 60, 50, 60, 55, 130, 0, 120, 11000 },
-        { "Lush Verb", 5, chorus, 35, 3.2f, 75, 60, 70, 50, 140, 0, 150, 10000 },
-        { "Wobble Hall", 5, chorus, 40, 4.0f, 80, 65, 90, 45, 130, 0, 100, 9000 },
-        { "Ensemble", 5, chorus, 15, 1.4f, 45, 40, 55, 60, 150, 0, 200, 13000 },
-        { "80s Snare Gate", 6, gated, 0, 1.6f, 60, 30, 20, 65, 120, 0, 150, 14000 },
-        { "Tom Gate", 6, gated, 0, 2.0f, 70, 35, 15, 50, 120, 0, 80, 10000 },
-        { "Short Gate", 6, gated, 0, 1.0f, 50, 25, 15, 60, 110, 0, 150, 13000 },
-        { "Kick Gate", 6, gated, 0, 1.2f, 55, 30, 10, 40, 100, 0, 40, 8000 },
-        { "Arena 84", 7, hall, 30, 4.5f, 95, 70, 40, 62, 140, 0, 120, 13000 },
-        { "Cathedral", 7, hall, 60, 7.0f, 100, 80, 35, 45, 130, 0, 100, 8000 },
-        { "Doom Hall", 7, hall, 80, 9.0f, 100, 85, 45, 30, 140, 30, 60, 5000 },
-        { "Lead Wash", 7, chorus, 90, 5.0f, 90, 70, 70, 55, 150, 60, 250, 11000 },
-    };
-    return list;
-}
-
-int RV1Processor::firstOfCategory (int cat)
-{
-    const auto& l = programs();
-    for (int i = 0; i < (int) l.size(); ++i) if (l[(size_t) i].category == cat) return i;
-    return 0;
-}
-
-namespace
-{
-// Eigenschaften der Algorithmen
-struct AlgoDef { float scale, diffusion, er, erScale, modRate, modDepth, bright; bool gate; };
-const AlgoDef algos[RV1Processor::numAlgos] = {
-    { 1.00f, 0.62f, 0.60f, 1.00f, 1.0f, 1.0f, 0, false },    // Hall
-    { 0.55f, 0.75f, 0.00f, 0.30f, 1.3f, 0.6f, 12, false },   // Plate: dicht, hell, keine frühen Reflexionen
-    { 0.35f, 0.55f, 1.00f, 0.45f, 0.8f, 0.4f, 0, false },    // Room
-    { 0.60f, 0.65f, 0.80f, 0.70f, 1.0f, 0.8f, 0, false },    // Chamber
-    { 0.30f, 0.60f, 1.00f, 0.35f, 1.0f, 0.6f, 0, false },    // Ambience
-    { 0.90f, 0.60f, 0.40f, 0.90f, 3.0f, 3.0f, 0, false },    // Chorus: starke Modulation
-    { 0.70f, 0.70f, 0.80f, 0.60f, 1.0f, 0.6f, 0, true },     // Gated
-};
-
-// Basislängen des Netzes in ms (teilerfremd verteilt)
-const float lineMs[8] = { 29.7f, 37.1f, 41.1f, 43.7f, 47.9f, 53.3f, 59.0f, 66.3f };
-const float lfoHz[8] = { 0.11f, 0.17f, 0.23f, 0.29f, 0.37f, 0.43f, 0.53f, 0.61f };
-const float injSign[8] = { 1, 1, -1, 1, 1, -1, -1, -1 };
-const float diffMs[2][4] = { { 4.77f, 3.59f, 12.73f, 9.30f }, { 4.97f, 3.83f, 12.11f, 9.81f } };
-struct Tap { float ms, g; };
-const Tap erTaps[2][8] = {
-    { { 4.3f, 0.84f }, { 9.7f, -0.71f }, { 14.1f, 0.62f }, { 21.3f, -0.53f }, { 28.9f, 0.45f }, { 37.4f, -0.38f }, { 47.2f, 0.31f }, { 58.6f, -0.24f } },
-    { { 5.9f, -0.81f }, { 11.2f, 0.69f }, { 17.8f, -0.60f }, { 24.6f, 0.51f }, { 32.7f, -0.43f }, { 41.9f, 0.35f }, { 52.3f, -0.28f }, { 63.1f, 0.22f } },
-};
-
-}
-
+// Parameter aus der Tabelle des Kerns (gleiche Reihenfolge und IDs wie früher).
+// Zwei Ausnahmen behalten ihren alten JUCE-Typ, damit Sessions und Automation unverändert bleiben:
+// Pre-Delay mit Mitte bei 60 ms und das Programm als AudioParameterInt.
 juce::AudioProcessorValueTreeState::ParameterLayout RV1Processor::createLayout()
 {
-    using F = juce::AudioParameterFloat;
-    using A = juce::AudioParameterFloatAttributes;
-    std::vector<std::unique_ptr<juce::RangedAudioParameter>> v;
-    auto add = [&] (const char* id, const char* name, juce::NormalisableRange<float> r, float def, const char* unit) {
-        v.push_back (std::make_unique<F> (juce::ParameterID { id, 1 }, name, r, def, A().withLabel (unit)));
-    };
-    juce::NormalisableRange<float> pd (0, 250); pd.setSkewForCentre (60);
-    add ("predelay", "Pre-Delay", pd, 30, "ms");
-    add ("decay", "Decay", onno::logRange (0.2f, 20), 2.4f, "s");
-    add ("size", "Size", { 0, 100 }, 60, "%");
-    add ("depth", "Depth", { 0, 100 }, 55, "%");
-    add ("movement", "Movement", { 0, 100 }, 30, "%");
-    add ("character", "Character", { 0, 100 }, 50, "");
-    add ("width", "Width", { 0, 150 }, 100, "%");
-    add ("duck", "Duck", { 0, 100 }, 0, "%");
-    add ("lowCut", "Low Cut", onno::logRange (20, 1000), 80, "Hz");
-    add ("highCut", "High Cut", onno::logRange (1000, 20000), 12000, "Hz");
-    add ("mix", "Mix", { 0, 100 }, 30, "%");
-    v.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "send", 1 }, "100% Wet", false));
-    v.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "freeze", 1 }, "Freeze", false));
-    v.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "bypass", 1 }, "Bypass", false));
-    juce::StringArray algoList; for (auto* a : algoNames) algoList.add (a);
-    v.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "algo", 1 }, "Algorithmus", algoList, 0));
-    v.push_back (std::make_unique<juce::AudioParameterInt> (juce::ParameterID { "program", 1 }, "Programm", 0, (int) programs().size() - 1, 0,
-                                                            juce::AudioParameterIntAttributes().withAutomatable (false)));
-    v.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "view", 1 }, "Ansicht", juce::StringArray { "Konsole", "Modern" }, 0,
-                                                               juce::AudioParameterChoiceAttributes().withAutomatable (false)));
-    return { v.begin(), v.end() };
+    onno::prm::Layout p;
+    for (auto& d : Core::makeParams())
+    {
+        if (d.id == "predelay")
+        {
+            juce::NormalisableRange<float> pd (d.min, d.max); pd.setSkewForCentre (60);
+            onno::prm::fl (p, d.id, d.name, pd, d.def, d.unit);
+        }
+        else if (d.id == "program")
+            p.push_back (std::make_unique<juce::AudioParameterInt> (juce::ParameterID { d.id, 1 }, d.name, (int) d.min, (int) d.max, (int) d.def,
+                                                                    juce::AudioParameterIntAttributes().withAutomatable (false)));
+        else
+            onno::prm::fromCore (p, { d });
+    }
+    return onno::prm::done (p);
 }
 
-RV1Processor::RV1Processor() : ModernProcessor ("Onno RV-1", "RV1", stereoBuses(), createLayout(), 20.0)
+RV1Processor::RV1Processor() : ModernProcessor ("Onno RV-1", "RV1", stereoBuses(), createLayout(), Core::maxTailSeconds)
 {
+    link.attach (apvts, core);
 }
 
-void RV1Processor::prepare (double sampleRate, int)
+void RV1Processor::prepare (double sampleRate, int maxBlock)
 {
-    sr = sampleRate;
-    for (auto& l : pre) l.init ((int) (0.45 * sr) + 4);
-    for (int c = 0; c < 2; ++c)
-        for (auto& a : diff[c]) a.line.init ((int) (0.03 * sr) + 4);
-    for (auto& l : tank) l.init ((int) (0.13 * sr) + 8);
-    damp.fill (0); lfoPhase.fill (0);
-    for (int i = 0; i < N; ++i) lfoPhase[(size_t) i] = (float) i * 0.785f;
-    lowCutF.reset(); highCutF.reset();
-    duckEnv = gateEnv = -120; gateGain = 0; gateTimer = 0;
+    link.pull (core);
+    core.prepare (sampleRate, maxBlock);
 }
 
 void RV1Processor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
@@ -134,166 +39,22 @@ void RV1Processor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
     juce::ScopedNoDenormals noDenormals;
     const int nch = std::min (2, getMainBusNumInputChannels()), n = buf.getNumSamples();
     if (nch == 0 || n == 0) return;
-    auto* L = buf.getWritePointer (0);
-    auto* R = buf.getWritePointer (nch > 1 ? 1 : 0);
-
-    float inPk = 0;
-    for (int i = 0; i < n; ++i) inPk = std::max (inPk, std::max (std::abs (L[i]), std::abs (R[i])));
-    onno::atomicMax (inPeak, inPk);
-    if (on ("bypass")) return;
-
-    const auto& ad = algos[juce::jlimit (0, numAlgos - 1, (int) p ("algo"))];
-    const bool freeze = on ("freeze");
-    const float sizeMul = 0.5f + p ("size") * 0.01f;
-    const float depth = p ("depth") * 0.01f, move = p ("movement") * 0.01f;
-    const float decay = ad.gate ? 3.0f : p ("decay");
-    const float gateTime = juce::jlimit (0.06f, 1.2f, p ("decay") * 0.25f);
-    const float width = p ("width") * 0.01f;
-    const float duck = p ("duck") * 0.01f;
-    const bool send = on ("send");
-    const float mix = send ? 1.0f : p ("mix") * 0.01f;
-    const float dryG = send ? 0.0f : 1.0f - mix;
-
-    // Dämpfung: Character 0 = dunkel, 100 = hell; mehr Tiefe klingt entfernter und dunkler
-    const float fc = juce::jlimit (1200.0f, 18000.0f, 1200.0f * std::pow (15.0f, (p ("character") + ad.bright) / 100.0f) * (1.0f - 0.35f * depth));
-    const float dampA = freeze ? 0.0f : (float) std::exp (-twoPi * fc / sr);
-
-    float len[N], fb[N], modS[N], inc[N];
-    for (int i = 0; i < N; ++i)
+    link.pull (core);
+    core.process (buf.getWritePointer (0), buf.getWritePointer (nch > 1 ? 1 : 0), n, nch);
+    onno::atomicMax (inPeak, core.inPk);
+    if (core.v[Core::bypass] <= 0.5f)       // bei Bypass bleiben Hall- und Duck-Anzeige stehen wie früher
     {
-        len[i] = lineMs[i] * 0.001f * ad.scale * sizeMul * (float) sr;
-        // 1,12: gleicht die Verluste durch Dämpfung und Interpolation aus, gemessen per Impulsantwort
-        fb[i] = freeze ? 1.0f : (float) std::pow (10.0, -3.0 * len[i] / (decay * 1.12 * sr));
-        modS[i] = move * 0.0009f * (float) sr * ad.modDepth;
-        inc[i] = (float) (twoPi * lfoHz[i] * ad.modRate * (0.4f + move) / sr);
+        onno::atomicMax (wetPeak, core.disp[0]);
+        duckDb = core.disp[1];
     }
-    float diffLen[2][4];
-    for (int c = 0; c < 2; ++c)
-        for (int k = 0; k < 4; ++k)
-            diffLen[c][k] = diffMs[c][k] * 0.001f * std::sqrt (ad.scale * sizeMul) * (float) sr;
-    const float diffG = ad.diffusion;
-    const float erGain = freeze ? 0.0f : ad.er * (1.0f - 0.85f * depth) * 0.5f;
-    const float lateGain = 0.6f + 0.4f * depth;
-    const float tankIn = freeze ? 0.0f : 0.5f;
-    const float pdS = std::max (1.0f, p ("predelay") * 0.001f * (float) sr);
-    float erD[2][8];
-    for (int c = 0; c < 2; ++c)
-        for (int k = 0; k < 8; ++k)
-            erD[c][k] = pdS + erTaps[c][k].ms * 0.001f * ad.erScale * sizeMul * (float) sr;
-
-    const float lc = p ("lowCut"), hc = p ("highCut");
-    const bool lcOn = lc > 20.5f, hcOn = hc < 19500.0f;
-    lowCutF.highPass (sr, lc, 0.7071);
-    highCutF.lowPass (sr, std::min ((double) hc, sr * 0.45), 0.7071);
-
-    const float dAtt = coef (5.0f, sr), dRel = coef (300.0f, sr);
-    const float gDet = coef (10.0f, sr), gOpen = coef (1.0f, sr), gClose = coef (8.0f, sr);
-    const float invSqrtN = 1.0f / std::sqrt ((float) N);
-    float wetPk = 0, duckMin = 0;
-
-    for (int i = 0; i < n; ++i)
-    {
-        const float xl = L[i], xr = R[i];
-        pre[0].write (xl); pre[1].write (xr);
-
-        // frühe Reflexionen
-        float er[2] = { 0, 0 };
-        if (erGain > 0)
-            for (int c = 0; c < 2; ++c)
-                for (int k = 0; k < 8; ++k) er[c] += erTaps[c][k].g * pre[c].read (erD[c][k]);
-
-        // Diffusion des verzögerten Signals
-        float d[2] = { pre[0].read (pdS), pre[1].read (pdS) };
-        for (int c = 0; c < 2; ++c)
-            for (int k = 0; k < 4; ++k) { diff[c][(size_t) k].len = diffLen[c][k]; d[c] = diff[c][(size_t) k].process (d[c], diffG); }
-
-        // Netz: lesen (moduliert), dämpfen, mischen (Hadamard), zurückschreiben
-        float y[N], x[N];
-        for (int k = 0; k < N; ++k)
-        {
-            lfoPhase[(size_t) k] += inc[k];
-            if (lfoPhase[(size_t) k] > 6.2831853f) lfoPhase[(size_t) k] -= 6.2831853f;
-            y[k] = tank[(size_t) k].read (len[k] + modS[k] * (1.0f + std::sin (lfoPhase[(size_t) k])) + 1.0f);
-            damp[(size_t) k] = y[k] * (1 - dampA) + damp[(size_t) k] * dampA;
-            x[k] = damp[(size_t) k] * fb[k];
-        }
-        for (int h = 1; h < N; h <<= 1)
-            for (int a = 0; a < N; a += 2 * h)
-                for (int b = a; b < a + h; ++b) { const float u = x[b], w = x[b + h]; x[b] = u + w; x[b + h] = u - w; }
-        for (int k = 0; k < N; ++k)
-            tank[(size_t) k].write (x[k] * invSqrtN + (k % 2 ? d[1] : d[0]) * injSign[k] * tankIn);
-
-        float wl = lateGain * 0.5f * (y[0] - y[2] + y[4] - y[6]) + erGain * er[0];
-        float wr = lateGain * 0.5f * (y[1] - y[3] + y[5] - y[7]) + erGain * er[1];
-
-        // Gated: Hall öffnet mit dem Signal und schließt nach der Gate-Zeit hart
-        if (ad.gate)
-        {
-            const float lvl = a2db (std::max (std::abs (xl), std::abs (xr)));
-            gateEnv = lvl > gateEnv ? lvl : gDet * gateEnv + (1 - gDet) * lvl;
-            if (gateEnv > -45.0f) gateTimer = gateTime; else gateTimer -= (float) (1.0 / sr);
-            const float target = gateTimer > 0 ? 1.0f : 0.0f;
-            gateGain = target > gateGain ? gOpen * gateGain + (1 - gOpen) * target : gClose * gateGain + (1 - gClose) * target;
-            if (target == 0.0f && gateGain < 1.0e-4f) gateGain = 0.0f;   // ganz zu, kein Restrauschen
-            wl *= gateGain; wr *= gateGain;
-        }
-
-        // Ducking: Hall wird leiser, solange das Signal spielt, und blüht in den Pausen auf
-        if (duck > 0)
-        {
-            const float lvl = a2db (std::max (std::abs (xl), std::abs (xr)));
-            duckEnv = lvl > duckEnv ? dAtt * duckEnv + (1 - dAtt) * lvl : dRel * duckEnv + (1 - dRel) * lvl;
-            const float red = -24.0f * duck * juce::jlimit (0.0f, 1.0f, (duckEnv + 45.0f) / 35.0f);
-            const float g = db2a (red);
-            wl *= g; wr *= g;
-            duckMin = std::min (duckMin, red);
-        }
-
-        if (lcOn) { wl = lowCutF.process (wl, 0); wr = lowCutF.process (wr, 1); }
-        if (hcOn) { wl = highCutF.process (wl, 0); wr = highCutF.process (wr, 1); }
-
-        // Breite über Mitte/Seite
-        const float m = 0.5f * (wl + wr), s = 0.5f * (wl - wr) * width;
-        wl = m + s; wr = m - s;
-        wetPk = std::max (wetPk, std::max (std::abs (wl), std::abs (wr)));
-
-        L[i] = xl * dryG + wl * mix;
-        if (nch > 1) R[i] = xr * dryG + wr * mix;
-    }
-
-    onno::atomicMax (wetPeak, wetPk);
-    duckDb = duckMin;
+    core.resetDisplay();
 }
 
 // ----------------------------------------------------------------- Programme
-std::vector<onno::ModernProcessor::FactoryPreset> RV1Processor::factoryPresets() const
-{
-    std::vector<FactoryPreset> l;
-    const auto& progs = programs();
-    for (int i = 0; i < (int) progs.size(); ++i)
-    {
-        const auto& pr = progs[(size_t) i];
-        l.push_back ({ pr.name,
-                       { { "program", (float) i }, { "algo", (float) pr.algo }, { "predelay", pr.predelay }, { "decay", pr.decay },
-                         { "size", pr.size }, { "depth", pr.depth }, { "movement", pr.movement }, { "character", pr.character },
-                         { "width", pr.width }, { "duck", pr.duck }, { "lowCut", pr.lowCut }, { "highCut", pr.highCut } },
-                       juce::String (categoryNames[pr.category]) });
-    }
-    return l;
-}
-
 void RV1Processor::loadProgram (int index)
 {
     const int n = (int) programs().size();
     loadPreset (1 + (index % n + n) % n);
-}
-
-int RV1Processor::factoryProgram() const
-{
-    const auto& l = programs();
-    for (int i = 0; i < (int) l.size(); ++i)
-        if (presetName == l[(size_t) i].name) return i;
-    return -1;
 }
 
 // Zustände von vor der Suite: Programmname aus dem Programm-Parameter übernehmen

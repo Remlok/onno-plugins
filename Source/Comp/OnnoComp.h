@@ -13,6 +13,7 @@ public:
     void prepare (double sampleRate, int) override;
     void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override;
+    std::vector<FactoryPreset> factoryPresets() const override { return fromCore (core.factoryPresets()); }
 
     // höchster Detektorpegel im Block (dB), für den Punkt auf der Kennlinie
     std::atomic<float> detPeak { 0.0f };

@@ -20,6 +20,7 @@ public:
     void prepare (double sampleRate, int) override;
     void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override;
+    std::vector<FactoryPreset> factoryPresets() const override { return fromCore (core.factoryPresets()); }
 
     static juce::String id (int b, const char* p) { return juce::String (Core::id (b, p)); }
     Band band (int b) const;

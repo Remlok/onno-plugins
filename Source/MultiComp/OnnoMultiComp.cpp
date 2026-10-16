@@ -8,64 +8,28 @@ const char* const MultiCompProcessor::bandNames[numBands] = { "LOW", "LOW-MID", 
 juce::AudioProcessorValueTreeState::ParameterLayout MultiCompProcessor::layout()
 {
     prm::Layout p;
-    const float att[] = { 20, 10, 5, 3 }, rel[] = { 200, 150, 100, 80 };
-    for (int b = 0; b < numBands; ++b)
-    {
-        const String n = String ("Band ") + String (b + 1) + " ";
-        prm::lin (p, id (b, "thr"), n + "Threshold", -60, 0, -18, "dB");
-        prm::lg (p, id (b, "ratio"), n + "Ratio", 1, 20, 2, ":1");
-        prm::lg (p, id (b, "attack"), n + "Attack", 0.1f, 200, att[b], "ms");
-        prm::lg (p, id (b, "release"), n + "Release", 10, 2000, rel[b], "ms");
-        prm::lin (p, id (b, "gain"), n + "Gain", -24, 24, 0, "dB");
-        prm::bl (p, id (b, "solo"), n + "Solo", false);
-        prm::bl (p, id (b, "byp"), n + "Bypass", false);
-    }
-    prm::lg (p, "x1", "Crossover Low", 20, 1000, 120, "Hz");
-    prm::lg (p, "x2", "Crossover Mid", 150, 6000, 1000, "Hz");
-    prm::lg (p, "x3", "Crossover High", 1000, 16000, 5000, "Hz");
-    prm::lin (p, "mix", "Mix", 0, 100, 100, "%");
-    prm::lin (p, "output", "Output", -24, 24, 0, "dB");
-    Analog::addParams (p);
-    prm::bl (p, "bypass", "Bypass", false);
+    prm::fromCore (p, core::MultiCompCore::makeParams());
     return prm::done (p);
 }
 
 MultiCompProcessor::MultiCompProcessor() : ModernProcessor ("Onno MultiComp", "OnnoMultiComp", stereoBuses(), layout())
 {
-    static const char* const names[] = { "thr", "ratio", "attack", "release", "gain", "solo", "byp" };
-    for (int b = 0; b < numBands; ++b)
-    {
-        for (int k = 0; k < numP; ++k) bp[(size_t) b][(size_t) k] = raw (id (b, names[k]));
-        bandGr[(size_t) b].store (0.0f);
-    }
-    pX1 = raw ("x1"); pX2 = raw ("x2"); pX3 = raw ("x3"); pMix = raw ("mix"); pOut = raw ("output"); pBypass = raw ("bypass");
-    analog.attach (*this);
+    for (auto& g : bandGr) g.store (0.0f);
+    pX1 = raw ("x1"); pX2 = raw ("x2"); pX3 = raw ("x3");
+    link.attach (apvts, core);
 }
 
 void MultiCompProcessor::crossovers (float& x1, float& x2, float& x3) const
 {
-    const float ny = (float) sr * 0.45f;
-    x1 = std::min (pX1->load(), ny / 2.0f);
-    x2 = juce::jlimit (x1 * 1.25f, ny / 1.5f, pX2->load());
-    x3 = juce::jlimit (x2 * 1.25f, ny, pX3->load());
+    core::MultiCompCore::crossovers (sr.load(), pX1->load(), pX2->load(), pX3->load(), x1, x2, x3);
 }
 
-void MultiCompProcessor::prepare (double sampleRate, int)
+void MultiCompProcessor::prepare (double sampleRate, int blockSize)
 {
-    sr = sampleRate;
-    analyzer.prepare (sr);
-    fx1 = fx2 = fx3 = -1;
-    for (auto* f : { &lp2[0], &lp2[1], &hp2[0], &hp2[1], &ap3, &lp1[0], &lp1[1], &hp1[0], &hp1[1], &ap1, &lp3[0], &lp3[1], &hp3[0], &hp3[1] })
-        f->reset();
-    env.fill (0.0f);
-    analog.prepare (sr);
-    for (int b = 0; b < numBands; ++b)
-    {
-        makeup[(size_t) b].reset (sr, 0.03);
-        makeup[(size_t) b].setCurrentAndTargetValue (dsp::db2a (bp[(size_t) b][pGain]->load()));
-    }
-    outS.reset (sr, 0.03); outS.setCurrentAndTargetValue (dsp::db2a (pOut->load()));
-    mixS.reset (sr, 0.03); mixS.setCurrentAndTargetValue (pMix->load() * 0.01f);
+    sr.store (sampleRate);
+    analyzer.prepare (sampleRate);
+    link.pull (core);
+    core.prepare (sampleRate, blockSize);
 }
 
 void MultiCompProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
@@ -76,79 +40,14 @@ void MultiCompProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffe
     if (nch == 0) return;
     float* L = buf.getWritePointer (0);
     float* R = buf.getWritePointer (nch > 1 ? 1 : 0);
-
-    if (pBypass->load() > 0.5f)
+    link.pull (core);
+    core.process (L, R, n, nch, nullptr, nullptr);
+    if (! (core.v[core::MultiCompCore::bypass] > 0.5f))
     {
-        analyzer.push (L, nch > 1 ? R : nullptr, n);
-        return;
+        for (int b = 0; b < numBands; ++b) atomicMin (bandGr[(size_t) b], core.disp[(size_t) b]);
+        atomicMax (outPeak, core.outPk);
     }
-
-    float x1, x2, x3;
-    crossovers (x1, x2, x3);
-    if (x1 != fx1) { fx1 = x1; for (auto& f : lp1) f.lowPass (sr, x1, 0.7071); for (auto& f : hp1) f.highPass (sr, x1, 0.7071); ap1.allPass (sr, x1, 0.7071); }
-    if (x2 != fx2) { fx2 = x2; for (auto& f : lp2) f.lowPass (sr, x2, 0.7071); for (auto& f : hp2) f.highPass (sr, x2, 0.7071); }
-    if (x3 != fx3) { fx3 = x3; for (auto& f : lp3) f.lowPass (sr, x3, 0.7071); for (auto& f : hp3) f.highPass (sr, x3, 0.7071); ap3.allPass (sr, x3, 0.7071); }
-
-    struct B { float thr, ratio, att, rel; bool solo, byp; };
-    std::array<B, numBands> bs;
-    bool anySolo = false;
-    for (int b = 0; b < numBands; ++b)
-    {
-        const auto& p = bp[(size_t) b];
-        bs[(size_t) b] = { p[pThr]->load(), std::max (1.0f, p[pRatio]->load()), dsp::coef (p[pAtt]->load(), sr), dsp::coef (p[pRel]->load(), sr),
-                           p[pSolo]->load() > 0.5f, p[pByp]->load() > 0.5f };
-        anySolo = anySolo || bs[(size_t) b].solo;
-        makeup[(size_t) b].setTargetValue (dsp::db2a (p[pGain]->load()));
-    }
-    outS.setTargetValue (dsp::db2a (pOut->load()));
-    mixS.setTargetValue (pMix->load() * 0.01f);
-    analog.beginBlock();
-
-    std::array<float, numBands> grMin {};
-    float outPk = 0;
-    for (int i = 0; i < n; ++i)
-    {
-        float band[numBands][2];
-        for (int c = 0; c < 2; ++c)
-        {
-            const float x = c == 0 ? L[i] : R[i];
-            // Aufteilen bei x2, dann unten bei x1 und oben bei x3 (mit Allpass-Ausgleich)
-            float lo = lp2[1].process (lp2[0].process (x, c), c);
-            float hi = hp2[1].process (hp2[0].process (x, c), c);
-            lo = ap3.process (lo, c);
-            hi = ap1.process (hi, c);
-            band[0][c] = lp1[1].process (lp1[0].process (lo, c), c);
-            band[1][c] = hp1[1].process (hp1[0].process (lo, c), c);
-            band[2][c] = lp3[1].process (lp3[0].process (hi, c), c);
-            band[3][c] = hp3[1].process (hp3[0].process (hi, c), c);
-        }
-        float ol = 0, orr = 0;
-        for (int b = 0; b < numBands; ++b)
-        {
-            const auto& s = bs[(size_t) b];
-            const float lvl = std::max (std::abs (band[b][0]), std::abs (band[b][1]));
-            const float xdb = dsp::a2db (lvl);
-            const float target = s.byp ? 0.0f : gainComputer (xdb, s.thr, s.ratio, 6.0f) - xdb;
-            auto& e = env[(size_t) b];
-            e = target < e ? s.att * e + (1 - s.att) * target : s.rel * e + (1 - s.rel) * target;
-            grMin[(size_t) b] = std::min (grMin[(size_t) b], e);
-            const float g = dsp::db2a (e) * makeup[(size_t) b].getNextValue();
-            if (anySolo && ! s.solo) continue;
-            ol += band[b][0] * g; orr += band[b][1] * g;
-        }
-        const float m = mixS.getNextValue(), og = outS.getNextValue();
-        // Dry für den Mix: Summe der Bänder ohne Bearbeitung entspricht dem Allpass-gefilterten Eingang
-        const float dl = band[0][0] + band[1][0] + band[2][0] + band[3][0];
-        const float dr = band[0][1] + band[1][1] + band[2][1] + band[3][1];
-        ol = (m * ol + (1 - m) * (anySolo ? ol : dl)) * og;
-        orr = (m * orr + (1 - m) * (anySolo ? orr : dr)) * og;
-        if (analog.active()) { analog.advance(); ol = analog.tick (ol, 0); orr = analog.tick (orr, 1); }
-        L[i] = ol;
-        if (nch > 1) R[i] = orr;
-        outPk = std::max (outPk, std::max (std::abs (ol), std::abs (orr)));
-    }
-    for (int b = 0; b < numBands; ++b) atomicMin (bandGr[(size_t) b], grMin[(size_t) b]);
-    atomicMax (outPeak, outPk);
+    core.resetDisplay();
     analyzer.push (L, nch > 1 ? R : nullptr, n);
 }
 

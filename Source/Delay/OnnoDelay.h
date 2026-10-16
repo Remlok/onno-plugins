@@ -4,12 +4,13 @@
 #include "Common/ModernEditor.h"
 #include "Common/OnnoDSP.h"
 #include "Common/Analog.h"
+#include "Core/DelayCore.h"
 
 class DelayProcessor : public onno::ModernProcessor
 {
 public:
-    static constexpr int numTaps = 3;
-    static constexpr float maxMs = 4000.0f;
+    static constexpr int numTaps = onno::core::DelayCore::numTaps;
+    static constexpr float maxMs = onno::core::DelayCore::maxMs;
     static const juce::StringArray divNames;
     static const float divBeats[];
 
@@ -17,6 +18,7 @@ public:
     void prepare (double sampleRate, int) override;
     void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override;
+    std::vector<FactoryPreset> factoryPresets() const override { return fromCore (core.factoryPresets()); }
 
     static juce::String id (int t, const char* p) { return "t" + juce::String (t + 1) + p; }
     // Verzögerung eines Taps in ms (Sync über das Tempo)
@@ -26,22 +28,10 @@ public:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout layout();
-    enum { pOn, pSync, pTime, pDiv, pFb, pLevel, pPan, pHp, pLp, pPp, numP };
-    struct Tap
-    {
-        std::vector<float> buf[2];
-        int w = 0;
-        float cur = -1, hpF = -1, lpF = -1;
-        bool wasOn = false;
-        onno::dsp::Biquad hp, lp;
-        onno::Analog analog;
-        std::array<std::atomic<float>*, numP> p {};
-    };
-    std::array<Tap, numTaps> taps;
-    std::atomic<float> *pDry, *pWet, *pDuck, *pBypass;
-    double sr = 48000;
-    float duckEnv = 0, duckS = 1;
-    juce::SmoothedValue<float> dryS, wetS;
+    onno::core::DelayCore core;
+    onno::CoreLink link;
+    // für tapMs() im GUI-Thread: Sync, Notenwert, Zeit je Tap
+    std::array<std::array<std::atomic<float>*, 3>, numTaps> tapP {};
 };
 
 class DelayEditor : public onno::ModernEditor

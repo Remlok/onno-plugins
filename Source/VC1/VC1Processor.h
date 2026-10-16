@@ -1,6 +1,7 @@
 #pragma once
 #include "Common/ModernProcessor.h"
 #include "Common/Analog.h"
+#include "Core/VC1Core.h"
 
 // Onno VC-1: VCA-Kompressor (Feed-forward, Stereo-gekoppelt, Soft-Knee, Parallel-Blend)
 // Teil der Suite: gemeinsame Kopfzeile (Presets, A/B, Rückgängig, MATCH, Bypass) und Analog-Färbung
@@ -10,10 +11,10 @@ public:
     VC1Processor();
 
     juce::AudioProcessorEditor* createEditor() override;
-    std::vector<FactoryPreset> factoryPresets() const override;
+    std::vector<FactoryPreset> factoryPresets() const override { return fromCore (core.factoryPresets()); }
 
     // Kennlinie in dB (für DSP und Anzeige)
-    static float gainComputer (float x, float thr, float ratio, float knee);
+    static float gainComputer (float x, float thr, float ratio, float knee) { return onno::core::VC1Core::gainComputer (x, thr, ratio, knee); }
 
     // Parameter-IDs in Reglerreihenfolge
     static constexpr int numKnobs = 7;
@@ -25,9 +26,8 @@ protected:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
-    float env = 0.0f;
-    double sr = 48000.0;
-    onno::Analog analog;
+    onno::core::VC1Core core;
+    onno::CoreLink link;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VC1Processor)
 };

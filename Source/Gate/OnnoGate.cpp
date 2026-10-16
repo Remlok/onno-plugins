@@ -6,39 +6,21 @@ using juce::String;
 juce::AudioProcessorValueTreeState::ParameterLayout GateProcessor::layout()
 {
     prm::Layout p;
-    prm::lin (p, "thr", "Threshold", -80, 0, -40, "dB");
-    prm::lin (p, "hyst", "Hysteresis", 0, 12, 4, "dB");
-    prm::lg (p, "attack", "Attack", 0.01f, 50, 0.5f, "ms");
-    prm::lin (p, "hold", "Hold", 0, 500, 50, "ms");
-    prm::lg (p, "release", "Release", 5, 2000, 150, "ms");
-    prm::lin (p, "range", "Range", -80, 0, -80, "dB");
-    prm::lin (p, "lookahead", "Lookahead", 0, 10, 0, "ms");
-    prm::lg (p, "scHpf", "Detector HPF", 20, 2000, 20, "Hz");
-    prm::lg (p, "scLpf", "Detector LPF", 1000, 20000, 20000, "Hz");
-    prm::ch (p, "source", "Detector Input", { "Main", "Sidechain" }, 0);
-    prm::bl (p, "listen", "Detector Listen", false);
-    Analog::addParams (p);
-    prm::bl (p, "bypass", "Bypass", false);
+    prm::fromCore (p, core::GateCore::makeParams());
     return prm::done (p);
 }
 
 GateProcessor::GateProcessor() : ModernProcessor ("Onno Gate", "OnnoGate", stereoBuses (true), layout())
 {
-    pThr = raw ("thr"); pHyst = raw ("hyst"); pAtt = raw ("attack"); pHold = raw ("hold"); pRel = raw ("release");
-    pRange = raw ("range"); pLa = raw ("lookahead"); pHpf = raw ("scHpf"); pLpf = raw ("scLpf");
-    pSrc = raw ("source"); pListen = raw ("listen"); pBypass = raw ("bypass");
-    analog.attach (*this);
+    link.attach (apvts, core);
 }
 
-void GateProcessor::prepare (double sampleRate, int)
+void GateProcessor::prepare (double sampleRate, int blockSize)
 {
-    sr = sampleRate;
-    for (auto& d : dl) d.assign ((size_t) (0.011 * sr) + 2, 0.0f);
-    dlPos = 0; det = 0; env = 0; open = false; holdCnt = 0; hpfF = lpfF = -1;
-    hpf.reset(); lpf.reset();
-    analog.prepare (sr);
-    la = (int) std::round (pLa->load() * 0.001 * sr);
-    setLatencySamples (la);
+    link.pull (core);
+    core.prepare (sampleRate, blockSize);
+    reportedLatency = core.latency();
+    setLatencySamples (reportedLatency);
 }
 
 void GateProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
@@ -47,70 +29,15 @@ void GateProcessor::process (juce::AudioBuffer<float>& buf, juce::MidiBuffer&)
     const int n = buf.getNumSamples();
     const int nch = std::min (2, getMainBusNumInputChannels());
     if (nch == 0) return;
-
-    const int newLa = juce::jlimit (0, (int) dl[0].size() - 2, (int) std::round (pLa->load() * 0.001 * sr));
-    if (newLa != la) { la = newLa; setLatencySamples (la); }
-
-    const float thr = pThr->load(), closeThr = thr - pHyst->load();
-    const float attC = dsp::coef (pAtt->load(), sr), relC = dsp::coef (pRel->load(), sr), detC = dsp::coef (8.0f, sr);
-    const int holdN = (int) (pHold->load() * 0.001 * sr);
-    const float rng = pRange->load() <= -79.9f ? 0.0f : dsp::db2a (pRange->load());
-    const float hf = pHpf->load(), lf = pLpf->load();
-    if (hf != hpfF) { hpfF = hf; hpf.highPass (sr, std::min ((double) hf, sr * 0.45), 0.7071); }
-    if (lf != lpfF) { lpfF = lf; lpf.lowPass (sr, std::min ((double) lf, sr * 0.45), 0.7071); }
-    const bool useH = hf > 20.5f, useL = lf < 19900.0f && lf < sr * 0.45;
-    const bool bypass = pBypass->load() > 0.5f, listen = pListen->load() > 0.5f;
-
-    analog.beginBlock();
-    const float* scL = nullptr; const float* scR = nullptr;
-    if (pSrc->load() > 0.5f) { scL = sidechain (buf, 0); scR = sidechain (buf, 1); }
-
-    float* L = buf.getWritePointer (0);
-    float* R = buf.getWritePointer (nch > 1 ? 1 : 0);
-    const int len = (int) dl[0].size();
-    float inPk = 0, outPk = 0, detMax = 0, openMax = 0, gMin = 1;
-
-    for (int i = 0; i < n; ++i)
-    {
-        const float xl = L[i], xr = R[i];
-        float dL = scL ? scL[i] : xl, dR = scR ? scR[i] : xr;
-        if (useH) { dL = hpf.process (dL, 0); dR = hpf.process (dR, 1); }
-        if (useL) { dL = lpf.process (dL, 0); dR = lpf.process (dR, 1); }
-        const float lvl = std::max (std::abs (dL), std::abs (dR));
-        det = lvl > det ? lvl : det * detC;
-        const float ddb = dsp::a2db (det);
-        if (ddb > thr) { open = true; holdCnt = holdN; }
-        else if (ddb < closeThr) { if (holdCnt > 0) --holdCnt; else open = false; }
-        env = open ? 1.0f - attC * (1.0f - env) : env * relC;
-        detMax = std::max (detMax, det);
-        openMax = std::max (openMax, env);
-
-        dl[0][(size_t) dlPos] = xl; dl[1][(size_t) dlPos] = xr;
-        int rp = dlPos - la; if (rp < 0) rp += len;
-        float yl = dl[0][(size_t) rp], yr = dl[1][(size_t) rp];
-        if (++dlPos >= len) dlPos = 0;
-
-        if (! bypass)
-        {
-            if (listen) { yl = dL; yr = dR; }
-            else
-            {
-                const float g = rng + (1.0f - rng) * env;
-                if (analog.active()) { analog.advance(); yl = analog.tick (yl, 0); yr = analog.tick (yr, 1); }
-                yl *= g; yr *= g;
-                gMin = std::min (gMin, g);
-            }
-        }
-        L[i] = yl;
-        if (nch > 1) R[i] = yr;
-        inPk = std::max (inPk, std::max (std::abs (xl), std::abs (xr)));
-        outPk = std::max (outPk, std::max (std::abs (yl), std::abs (yr)));
-    }
-    atomicMax (inPeak, inPk);
-    atomicMax (outPeak, outPk);
-    atomicMin (grPeak, dsp::a2db (gMin));
-    atomicMax (detPeak, detMax);
-    atomicMax (openPeak, openMax);
+    link.pull (core);
+    core.process (buf.getWritePointer (0), buf.getWritePointer (nch > 1 ? 1 : 0), n, nch, sidechain (buf, 0), sidechain (buf, 1));
+    if (core.latency() != reportedLatency) { reportedLatency = core.latency(); setLatencySamples (reportedLatency); }
+    atomicMax (inPeak, core.inPk);
+    atomicMax (outPeak, core.outPk);
+    atomicMin (grPeak, core.grMin);
+    atomicMax (detPeak, core.detPk);
+    atomicMax (openPeak, core.disp[0]);
+    core.resetDisplay();
 }
 
 juce::AudioProcessorEditor* GateProcessor::createEditor() { return new GateEditor (*this); }

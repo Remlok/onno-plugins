@@ -4,6 +4,7 @@
 #include "Common/ModernEditor.h"
 #include "Common/OnnoDSP.h"
 #include "Common/Analog.h"
+#include "Core/GateCore.h"
 
 class GateProcessor : public onno::ModernProcessor
 {
@@ -12,19 +13,15 @@ public:
     void prepare (double sampleRate, int) override;
     void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     juce::AudioProcessorEditor* createEditor() override;
+    std::vector<FactoryPreset> factoryPresets() const override { return fromCore (core.factoryPresets()); }
 
     std::atomic<float> detPeak { 0.0f }, openPeak { 0.0f };
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout layout();
-    std::atomic<float> *pThr, *pHyst, *pAtt, *pHold, *pRel, *pRange, *pLa, *pHpf, *pLpf, *pSrc, *pListen, *pBypass;
-    double sr = 48000;
-    std::vector<float> dl[2];
-    int dlPos = 0, la = -1, holdCnt = 0;
-    float det = 0, env = 0, hpfF = -1, lpfF = -1;
-    bool open = false;
-    onno::dsp::Biquad hpf, lpf;
-    onno::Analog analog;
+    onno::core::GateCore core;
+    onno::CoreLink link;
+    int reportedLatency = -1;
 };
 
 class GateEditor : public onno::ModernEditor

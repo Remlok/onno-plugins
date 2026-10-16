@@ -78,6 +78,14 @@ inline float gainComputer (float x, float thr, float ratio, float knee)
     return thr + d * slope;
 }
 
+// ---------------------------------------------------------------- Werkspresets
+// Name, optionale Kategorie (Untermenü) und Abweichungen vom Standard in Einheiten des Parameters
+struct Preset
+{
+    std::string name, category;
+    std::vector<std::pair<std::string, float>> values;
+};
+
 // ---------------------------------------------------------------- Kern
 class PluginCore
 {
@@ -96,10 +104,21 @@ public:
     // L/R: Kanäle (R == L bei Mono), nch 1 oder 2; Sidechain optional
     virtual void process (float* L, float* R, int n, int nch, const float* scL = nullptr, const float* scR = nullptr) = 0;
     virtual int latency() const { return 0; }
+    virtual std::vector<Preset> factoryPresets() const { return {}; }
+    // Tempo des Hosts (BPM) für tempo-synchrone Plugins
+    virtual void setTempo (double) {}
+    // Parameter, die beim Laden eines Werkspresets bleiben (z. B. Mix, Ausgang)
+    virtual bool keepOnPreset (const std::string&) const { return false; }
+    // Nachklang in Sekunden bei den aktuellen Werten (für Mixdown-Länge)
+    virtual double tailSeconds() const { return 0.0; }
 
     std::vector<float> v;   // aktuelle Werte in Einheiten des Parameters, Reihenfolge wie params()
     // Anzeige: Spitzen des letzten Blocks (linear) und tiefste Gain Reduction (dB)
     float inPk = 0, outPk = 0, grMin = 0, detPk = 0;
+    // weitere Anzeigewerte, je Plugin festgelegt (z. B. GR pro Band, Spektrum). Ein Kern darf Werte über
+    // mehrere Blöcke sammeln (Spitzen halten), bis die Anzeige sie abholt und resetDisplay() aufruft.
+    std::vector<float> disp;
+    virtual void resetDisplay() {}
 
 protected:
     ParamList defs;
